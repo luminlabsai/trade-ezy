@@ -1,0 +1,11 @@
+# Azure Functions SDK
+azure-functions==1.21.3
+
+# Azure Cosmos DB SDK
+azure-cosmos==4.9.0
+
+# OpenAI Python SDK
+openai>=1.54.5
+
+# Requests library for HTTP calls
+requests==2.32.3
