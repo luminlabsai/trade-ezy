@@ -88,8 +88,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
                     )
 
-                # Format the endpoint with arguments
-                endpoint = endpoint_template.format(**arguments)
+                # Dynamically include the fields parameter if specified
+                fields = arguments.get("fields", ["name", "description", "price", "duration_minutes"])
+                service_name = arguments.get("service_name", None)
+                arguments["fields"] = ",".join(fields)  # Convert list to a comma-separated string
+
+                # If a specific service is requested, add it as a query parameter
+                if service_name:
+                    endpoint = endpoint_template.format(businessID=arguments["businessID"], fields=arguments["fields"]) + f"&service_name={service_name}"
+                else:
+                    endpoint = endpoint_template.format(**arguments)
 
                 # Call the Azure Function
                 function_response = requests.get(endpoint)
