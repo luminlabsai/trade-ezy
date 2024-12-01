@@ -4,6 +4,6 @@ import os
 BASE_URL = os.getenv("FUNCTION_APP_BASE_URL", "http://localhost:7071")
 
 function_endpoints = {
-    "getBusinessServices": f"{BASE_URL}/api/getBusinessServices/{{businessId}}",
-    "getBusinessName": f"{BASE_URL}/api/getBusinessName/{{businessId}}"
+    "getBusinessServices": f"{BASE_URL}/api/getBusinessServices/{{businessID}}?fields={{fields}}",
+    "getBusinessName": f"{BASE_URL}/api/getBusinessName/{{businessID}}"
 }

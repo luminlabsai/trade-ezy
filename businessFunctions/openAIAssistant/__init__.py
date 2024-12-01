@@ -63,22 +63,20 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     {"role": "user", "content": query}
                 ],
                 functions=function_descriptions,
-                function_call="auto",  # Allow assistant to decide if a function call is needed
+                function_call="auto",
                 temperature=0.7,
                 top_p=0.95,
                 max_tokens=800,
-                user=ASSISTANT_ID  # Assistant ID for personalization
+                user=ASSISTANT_ID
             )
 
             assistant_response = response.choices[0].message
 
-            # Check if the assistant decides to call a function
             if hasattr(assistant_response, "function_call") and assistant_response.function_call:
                 function_call = assistant_response.function_call
                 function_name = function_call.name
                 arguments = json.loads(function_call.arguments)
 
-                # Retrieve the endpoint for the function
                 endpoint_template = function_endpoints.get(function_name)
                 if not endpoint_template:
                     logging.error(f"No endpoint configured for function: {function_name}")
@@ -88,18 +86,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
                     )
 
-                # Include the fields parameter and check for a specific service name
                 fields = arguments.get("fields", ["name", "description", "price", "duration_minutes"])
-                arguments["fields"] = ",".join(fields)  # Convert list to a comma-separated string
+                arguments["fields"] = ",".join(fields)
                 service_name = arguments.get("service_name")
 
-                # Construct the endpoint with service_name if provided
                 if service_name:
                     endpoint = f"{endpoint_template.format(businessID=arguments['businessID'], fields=arguments['fields'])}&service_name={service_name}"
                 else:
                     endpoint = endpoint_template.format(**arguments)
 
-                # Call the Azure Function
                 try:
                     function_response = requests.get(endpoint)
                     if function_response.status_code == 200:
@@ -124,7 +119,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
                     )
 
-            # If no function call, return the assistant's response
             answer = assistant_response.content
             return func.HttpResponse(
                 answer,

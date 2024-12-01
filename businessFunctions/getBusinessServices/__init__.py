@@ -18,8 +18,8 @@ container = database.get_container_client(COSMOS_DB_CONTAINER_ID)
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("Processing request to get services for a business.")
 
-    # Get businessId and fields from the query parameters
-    business_id = req.route_params.get("businessId")
+    # Get businessID and fields from the query parameters
+    business_id = req.route_params.get("businessID")
     fields = req.params.get("fields")  # Expecting a comma-separated list of fields
     service_name = req.params.get("service_name")  # Optional service_name parameter for filtering
 
@@ -53,8 +53,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         select_clause = ", ".join([f"c.{field}" for field in fields])
 
         # Construct the WHERE clause dynamically
-        where_clause = "c.business_id = @businessId"
-        parameters = [{"name": "@businessId", "value": business_id}]
+        where_clause = "c.business_id = @businessID"
+        parameters = [{"name": "@businessID", "value": business_id}]
 
         if service_name:
             where_clause += " AND c.name = @serviceName"
