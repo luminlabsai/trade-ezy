@@ -88,30 +88,38 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
                     )
 
-                # Dynamically include the fields parameter if specified
+                # Include the fields parameter and check for a specific service name
                 fields = arguments.get("fields", ["name", "description", "price", "duration_minutes"])
-                service_name = arguments.get("service_name", None)
                 arguments["fields"] = ",".join(fields)  # Convert list to a comma-separated string
+                service_name = arguments.get("service_name")
 
-                # If a specific service is requested, add it as a query parameter
+                # Construct the endpoint with service_name if provided
                 if service_name:
-                    endpoint = endpoint_template.format(businessID=arguments["businessID"], fields=arguments["fields"]) + f"&service_name={service_name}"
+                    endpoint = f"{endpoint_template.format(businessID=arguments['businessID'], fields=arguments['fields'])}&service_name={service_name}"
                 else:
                     endpoint = endpoint_template.format(**arguments)
 
                 # Call the Azure Function
-                function_response = requests.get(endpoint)
-                if function_response.status_code == 200:
-                    result = function_response.json()
+                try:
+                    function_response = requests.get(endpoint)
+                    if function_response.status_code == 200:
+                        result = function_response.json()
+                        return func.HttpResponse(
+                            json.dumps(result),
+                            status_code=200,
+                            headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+                        )
+                    else:
+                        logging.error(f"Function call failed: {function_response.text}")
+                        return func.HttpResponse(
+                            f"Failed to call function {function_name}: {function_response.text}",
+                            status_code=500,
+                            headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+                        )
+                except requests.RequestException as e:
+                    logging.error(f"Error calling function {function_name}: {e}")
                     return func.HttpResponse(
-                        json.dumps(result),
-                        status_code=200,
-                        headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-                    )
-                else:
-                    logging.error(f"Function call failed: {function_response.text}")
-                    return func.HttpResponse(
-                        f"Failed to call function {function_name}: {function_response.text}",
+                        f"Error calling function {function_name}: {e}",
                         status_code=500,
                         headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
                     )

@@ -1,30 +1,27 @@
 function_descriptions = [
     {
         "name": "getBusinessServices",
-        "description": "Retrieve the list of services offered by a business based on its business ID.",
+        "description": "Retrieve the services offered by a business.",
         "parameters": {
             "type": "object",
             "properties": {
-                "businessId": {
+                "businessID": {
                     "type": "string",
-                    "description": "The unique ID of the business."
+                    "description": "The unique identifier of the business."
+                },
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "The list of fields to include in the response."
+                },
+                "service_name": {
+                    "type": "string",
+                    "description": "The specific service to retrieve details for (optional)."
                 }
             },
-            "required": ["businessId"]
-        }
-    },
-    {
-        "name": "getBusinessName",
-        "description": "Retrieve the name of a business based on its business ID.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "businessId": {
-                    "type": "string",
-                    "description": "The unique ID of the business."
-                }
-            },
-            "required": ["businessId"]
+            "required": ["businessID", "fields"]
         }
     }
 ]
