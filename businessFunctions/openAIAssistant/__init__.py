@@ -72,6 +72,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
             assistant_response = response.choices[0].message
 
+            # Check if the assistant decides to call a function
             if hasattr(assistant_response, "function_call") and assistant_response.function_call:
                 function_call = assistant_response.function_call
                 function_name = function_call.name
@@ -99,8 +100,23 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     function_response = requests.get(endpoint)
                     if function_response.status_code == 200:
                         result = function_response.json()
+
+                        # Include a message with role 'function' to send the result back to OpenAI
+                        follow_up_response = openai.chat.completions.create(
+                            model="gpt-4",
+                            messages=[
+                                {"role": "system", "content": f"You are an assistant for the following business context: {business_context}"},
+                                {"role": "user", "content": query},
+                                {"role": "function", "name": function_name, "content": json.dumps(result)}
+                            ],
+                            temperature=0.7,
+                            top_p=0.95,
+                            max_tokens=800,
+                            user=ASSISTANT_ID
+                        )
+
                         return func.HttpResponse(
-                            json.dumps(result),
+                            follow_up_response.choices[0].message.content,
                             status_code=200,
                             headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
                         )
@@ -119,6 +135,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
                     )
 
+            # If no function call, return the assistant's response
             answer = assistant_response.content
             return func.HttpResponse(
                 answer,
