@@ -56,6 +56,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         # Call OpenAI assistant with the query and context
         try:
+            logging.info("Sending request to OpenAI API.")
             response = openai.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -71,6 +72,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             )
 
             assistant_response = response.choices[0].message
+            logging.info(f"OpenAI assistant response: {assistant_response}")
 
             # Check if the assistant decides to call a function
             if hasattr(assistant_response, "function_call") and assistant_response.function_call:
@@ -78,6 +80,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 function_name = function_call.name
                 arguments = json.loads(function_call.arguments)
 
+                logging.info(f"Function call requested: {function_name} with arguments {arguments}")
+
+                # Retrieve the endpoint for the function
                 endpoint_template = function_endpoints.get(function_name)
                 if not endpoint_template:
                     logging.error(f"No endpoint configured for function: {function_name}")
@@ -87,6 +92,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
                     )
 
+                # Populate the endpoint with parameters
                 fields = arguments.get("fields", ["name", "description", "price", "duration_minutes"])
                 arguments["fields"] = ",".join(fields)
                 service_name = arguments.get("service_name")
@@ -96,12 +102,17 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 else:
                     endpoint = endpoint_template.format(**arguments)
 
+                logging.info(f"Constructed endpoint: {endpoint}")
+
+                # Call the Azure Function
                 try:
                     function_response = requests.get(endpoint)
+                    logging.info(f"Function response: {function_response.status_code}, {function_response.text}")
                     if function_response.status_code == 200:
                         result = function_response.json()
+                        logging.info(f"Function result: {result}")
 
-                        # Include a message with role 'function' to send the result back to OpenAI
+                        # Send the function result back to OpenAI for further response generation
                         follow_up_response = openai.chat.completions.create(
                             model="gpt-4",
                             messages=[
@@ -137,6 +148,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
             # If no function call, return the assistant's response
             answer = assistant_response.content
+            logging.info(f"Returning assistant response: {answer}")
             return func.HttpResponse(
                 answer,
                 status_code=200,
