@@ -9,3 +9,7 @@ openai>=1.54.5
 
 # Requests library for HTTP calls
 requests==2.32.3
+
+# AWS PostgreSQL
+psycopg2-binary
+
