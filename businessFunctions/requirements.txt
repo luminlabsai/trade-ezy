@@ -13,3 +13,4 @@ requests==2.32.3
 # AWS PostgreSQL
 psycopg2-binary
 
+fuzzywuzzy

@@ -8,6 +8,7 @@ import psycopg2
 from uuid import uuid4
 from function_descriptions import function_descriptions
 from function_endpoints import function_endpoints
+from fuzzywuzzy import fuzz, process  # For fuzzy matching of service names
 
 # Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "MISSING_KEY")
@@ -122,6 +123,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # Add the current query to the messages
         messages.append({"role": "user", "content": query})
 
+        # Add the business context to the assistant's context
+        if business_context:
+            messages.insert(0, {
+                "role": "system",
+                "content": f"You are helping to answer questions for a business with ID {business_context['businessID']}."
+            })
+
         # Store the user's query in the database
         store_chat_message(business_id, session_id, "user", query)
 
@@ -167,14 +175,26 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
                 )
 
-            fields = arguments.get("fields", ["name", "description", "price", "duration_minutes"])
-            arguments["fields"] = ",".join(fields)
+            # Handle partial matching and dynamic field construction
             service_name = arguments.get("service_name")
+            fields = arguments.get("fields", ["name", "description", "price", "duration_minutes"])
 
+            # Fuzzy matching if service_name is provided
             if service_name:
-                endpoint = f"{endpoint_template.format(businessID=arguments['businessID'], fields=arguments['fields'])}&service_name={service_name}"
-            else:
-                endpoint = endpoint_template.format(**arguments)
+                all_services = ["massage", "facial", "reiki", "deep tissue massage"]  # Example list, ideally fetch from DB
+                best_match = process.extractOne(service_name, all_services, scorer=fuzz.partial_ratio)
+                if best_match and best_match[1] > 80:  # Match threshold
+                    arguments["service_name"] = best_match[0]
+                else:
+                    logging.warning(f"Could not find an exact match for service: {service_name}")
+                    return func.HttpResponse(
+                        f"No exact match found for the service '{service_name}'. Please provide more details or try again.",
+                        status_code=404,
+                        headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+                    )
+
+            # Construct the endpoint
+            endpoint = endpoint_template.format(businessID=arguments["businessID"], fields=",".join(fields))
 
             try:
                 function_response = requests.get(endpoint)
