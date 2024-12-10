@@ -4,13 +4,21 @@ import openai
 import requests
 import json
 import azure.functions as func
+import psycopg2
+from uuid import uuid4
 from function_descriptions import function_descriptions
 from function_endpoints import function_endpoints
 
 # Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "MISSING_KEY")
-ASSISTANT_ID = "asst_x0xrh7dShxqC0eBHfIuunn1L"  # Replace with your assistant ID
-API_TYPE = os.getenv("OPENAI_API_TYPE", "openai")  # Explicitly set to 'openai' or 'azure'
+ASSISTANT_ID = "asst_x0xrh7dShxqC0eBHfIuunn1L"
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4")  # Default to gpt-4 if not set
+CHAT_HISTORY_LIMIT = int(os.getenv("CHAT_HISTORY_LIMIT", 10))  # Default to 10 if not set
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_PORT = os.getenv("DB_PORT", 5432)
 
 if OPENAI_API_KEY == "MISSING_KEY":
     logging.error("Required environment variable OPENAI_API_KEY is not set.")
@@ -18,7 +26,56 @@ if OPENAI_API_KEY == "MISSING_KEY":
 
 # Initialize OpenAI client
 openai.api_key = OPENAI_API_KEY
-openai.api_type = API_TYPE
+
+def fetch_chat_history(business_id, session_id, limit=CHAT_HISTORY_LIMIT):
+    """Retrieve the last 'n' chat messages for a specific business and session."""
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT
+        )
+        cursor = conn.cursor()
+        query = """
+            SELECT role, content 
+            FROM chathistory 
+            WHERE business_id = %s AND session_id = %s 
+            ORDER BY timestamp ASC LIMIT %s
+        """
+        cursor.execute(query, (business_id, session_id, limit))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [{"role": row[0], "content": row[1]} for row in rows]
+    except psycopg2.Error as e:
+        logging.error(f"Error fetching chat history: {e}")
+        return []
+
+def store_chat_message(business_id, session_id, role, content):
+    """Store a chat message in the database."""
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT
+        )
+        cursor = conn.cursor()
+        query = """
+            INSERT INTO chathistory (business_id, session_id, role, content)
+            VALUES (%s, %s, %s, %s)
+        """
+        cursor.execute(query, (business_id, session_id, role, content))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logging.info(f"Stored message: Role={role}, Content={content}")
+    except psycopg2.Error as e:
+        logging.error(f"Error storing chat message: {e}")
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("Processing chat request with OpenAI assistant.")
@@ -35,10 +92,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     try:
-        # Parse the incoming request
         req_body = req.get_json()
         query = req_body.get("query")
         business_context = req_body.get("businessContext")
+        session_id = req_body.get("sessionID") or str(uuid4())  # Generate a new session ID if not provided
 
         if not query:
             return func.HttpResponse(
@@ -54,113 +111,110 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
             )
 
-        # Call OpenAI assistant with the query and context
-        try:
-            logging.info("Sending request to OpenAI API.")
-            response = openai.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": f"You are an assistant for the following business context: {business_context}"},
-                    {"role": "user", "content": query}
-                ],
-                functions=function_descriptions,
-                function_call="auto",
-                temperature=0.7,
-                top_p=0.95,
-                max_tokens=800,
-                user=ASSISTANT_ID
+        business_id = business_context["businessID"]
+
+        # Fetch chat history
+        chat_history = fetch_chat_history(business_id, session_id)
+
+        # OpenAI expects messages to be formatted as [{"role": "user", "content": "..."}, ...]
+        messages = [{"role": message["role"], "content": message["content"]} for message in chat_history]
+
+        # Add the current query to the messages
+        messages.append({"role": "user", "content": query})
+
+        # Store the user's query in the database
+        store_chat_message(business_id, session_id, "user", query)
+
+        # Call OpenAI assistant with the full context
+        logging.info(f"Sending request to OpenAI API with model {LLM_MODEL}.")
+        response = openai.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            functions=function_descriptions,
+            function_call="auto",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=800,
+            user=ASSISTANT_ID
+        )
+
+        assistant_response = response.choices[0].message
+        logging.info(f"OpenAI assistant response: {assistant_response}")
+
+        # Check if the assistant decides to call a function
+        if hasattr(assistant_response, "function_call") and assistant_response.function_call:
+            function_call = assistant_response.function_call
+            function_name = function_call.name
+            arguments = json.loads(function_call.arguments)
+
+            logging.info(f"Function call requested: {function_name} with arguments {arguments}")
+
+            # Store the assistant's function call in the database
+            store_chat_message(
+                business_id,
+                session_id,
+                "assistant",
+                f"Function Call: {function_name} with arguments {json.dumps(arguments)}"
             )
 
-            assistant_response = response.choices[0].message
-            logging.info(f"OpenAI assistant response: {assistant_response}")
+            # Retrieve the endpoint for the function
+            endpoint_template = function_endpoints.get(function_name)
+            if not endpoint_template:
+                logging.error(f"No endpoint configured for function: {function_name}")
+                return func.HttpResponse(
+                    f"No endpoint configured for function: {function_name}",
+                    status_code=500,
+                    headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+                )
 
-            # Check if the assistant decides to call a function
-            if hasattr(assistant_response, "function_call") and assistant_response.function_call:
-                function_call = assistant_response.function_call
-                function_name = function_call.name
-                arguments = json.loads(function_call.arguments)
+            fields = arguments.get("fields", ["name", "description", "price", "duration_minutes"])
+            arguments["fields"] = ",".join(fields)
+            service_name = arguments.get("service_name")
 
-                logging.info(f"Function call requested: {function_name} with arguments {arguments}")
+            if service_name:
+                endpoint = f"{endpoint_template.format(businessID=arguments['businessID'], fields=arguments['fields'])}&service_name={service_name}"
+            else:
+                endpoint = endpoint_template.format(**arguments)
 
-                # Retrieve the endpoint for the function
-                endpoint_template = function_endpoints.get(function_name)
-                if not endpoint_template:
-                    logging.error(f"No endpoint configured for function: {function_name}")
-                    return func.HttpResponse(
-                        f"No endpoint configured for function: {function_name}",
-                        status_code=500,
-                        headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+            try:
+                function_response = requests.get(endpoint)
+                if function_response.status_code == 200:
+                    result = function_response.json()
+
+                    # Store the result in the database
+                    store_chat_message(
+                        business_id,
+                        session_id,
+                        "assistant",
+                        json.dumps(result)
                     )
 
-                # Populate the endpoint with parameters
-                fields = arguments.get("fields", ["name", "description", "price", "duration_minutes"])
-                arguments["fields"] = ",".join(fields)
-                service_name = arguments.get("service_name")
-
-                if service_name:
-                    endpoint = f"{endpoint_template.format(businessID=arguments['businessID'], fields=arguments['fields'])}&service_name={service_name}"
+                    return func.HttpResponse(
+                        json.dumps(result),
+                        status_code=200,
+                        headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+                    )
                 else:
-                    endpoint = endpoint_template.format(**arguments)
-
-                logging.info(f"Constructed endpoint: {endpoint}")
-
-                # Call the Azure Function
-                try:
-                    function_response = requests.get(endpoint)
-                    logging.info(f"Function response: {function_response.status_code}, {function_response.text}")
-                    if function_response.status_code == 200:
-                        result = function_response.json()
-                        logging.info(f"Function result: {result}")
-
-                        # Send the function result back to OpenAI for further response generation
-                        follow_up_response = openai.chat.completions.create(
-                            model="gpt-4",
-                            messages=[
-                                {"role": "system", "content": f"You are an assistant for the following business context: {business_context}"},
-                                {"role": "user", "content": query},
-                                {"role": "function", "name": function_name, "content": json.dumps(result)}
-                            ],
-                            temperature=0.7,
-                            top_p=0.95,
-                            max_tokens=800,
-                            user=ASSISTANT_ID
-                        )
-
-                        return func.HttpResponse(
-                            follow_up_response.choices[0].message.content,
-                            status_code=200,
-                            headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-                        )
-                    else:
-                        logging.error(f"Function call failed: {function_response.text}")
-                        return func.HttpResponse(
-                            f"Failed to call function {function_name}: {function_response.text}",
-                            status_code=500,
-                            headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-                        )
-                except requests.RequestException as e:
-                    logging.error(f"Error calling function {function_name}: {e}")
                     return func.HttpResponse(
-                        f"Error calling function {function_name}: {e}",
+                        f"Failed to call function {function_name}: {function_response.text}",
                         status_code=500,
                         headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
                     )
+            except requests.RequestException as e:
+                return func.HttpResponse(
+                    f"Error calling function {function_name}: {e}",
+                    status_code=500,
+                    headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+                )
 
-            # If no function call, return the assistant's response
-            answer = assistant_response.content
-            logging.info(f"Returning assistant response: {answer}")
-            return func.HttpResponse(
-                answer,
-                status_code=200,
-                headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-            )
-        except openai.OpenAIError as e:
-            logging.error(f"OpenAI API Error: {e}")
-            return func.HttpResponse(
-                "Error communicating with OpenAI API.",
-                status_code=500,
-                headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-            )
+        # Store the assistant's response in the database
+        store_chat_message(business_id, session_id, "assistant", assistant_response.content)
+
+        return func.HttpResponse(
+            assistant_response.content,
+            status_code=200,
+            headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+        )
 
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
