@@ -39,15 +39,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     # Default fields to query
     default_fields = ["name", "description", "duration_minutes", "price"]
+    allowed_fields = {"name", "description", "duration_minutes", "price"}
 
     try:
         # Parse and validate fields
         if fields:
             fields = [field.strip() for field in fields.split(",")]
-            # Validate fields against allowed fields
-            allowed_fields = {"name", "description", "duration_minutes", "price"}
             fields = [field for field in fields if field in allowed_fields]
             if not fields:
+                logging.warning("No valid fields specified. Using default fields.")
                 fields = default_fields
         else:
             fields = default_fields
@@ -60,8 +60,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         query_params = [business_id]
 
         if service_name:
-            query += " AND name = %s"
-            query_params.append(service_name.strip())
+            query += " AND name ILIKE %s"  # Case-insensitive match for service name
+            query_params.append(f"%{service_name.strip()}%")
 
         # Connect to PostgreSQL
         conn = psycopg2.connect(
