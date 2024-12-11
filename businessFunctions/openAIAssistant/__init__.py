@@ -21,15 +21,15 @@ DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_PORT = os.getenv("DB_PORT", 5432)
 
+# Validate environment variables
 if OPENAI_API_KEY == "MISSING_KEY":
     logging.error("Required environment variable OPENAI_API_KEY is not set.")
     raise ValueError("Required environment variable is not set.")
 
-# Initialize OpenAI client
 openai.api_key = OPENAI_API_KEY
 
+# Helper Functions
 def fetch_chat_history(business_id, session_id, limit=CHAT_HISTORY_LIMIT):
-    """Retrieve the last 'n' chat messages for a specific business and session."""
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -49,14 +49,12 @@ def fetch_chat_history(business_id, session_id, limit=CHAT_HISTORY_LIMIT):
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-
         return [{"role": row[0], "content": row[1]} for row in rows]
     except psycopg2.Error as e:
         logging.error(f"Error fetching chat history: {e}")
         return []
 
 def store_chat_message(business_id, session_id, role, content):
-    """Store a chat message in the database."""
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -78,15 +76,16 @@ def store_chat_message(business_id, session_id, role, content):
     except psycopg2.Error as e:
         logging.error(f"Error storing chat message: {e}")
 
+# Main Function
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("Processing chat request with OpenAI assistant.")
-
+    
     # Handle CORS preflight requests
     if req.method == "OPTIONS":
         return func.HttpResponse(
             status_code=200,
             headers={
-                "Access-Control-Allow-Origin": "http://localhost:3000",
+                "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "POST, OPTIONS",
                 "Access-Control-Allow-Headers": "Content-Type, Authorization",
             },
@@ -96,150 +95,97 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         req_body = req.get_json()
         query = req_body.get("query")
         business_context = req_body.get("businessContext")
-        session_id = req_body.get("sessionID") or str(uuid4())  # Generate a new session ID if not provided
+        session_id = req_body.get("sessionID") or str(uuid4())  # Generate new session ID if not provided
 
         if not query:
             return func.HttpResponse(
                 "Query is missing.",
                 status_code=400,
-                headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+                headers={"Access-Control-Allow-Origin": "*"}
             )
 
-        if not business_context:
+        if not business_context or "businessID" not in business_context:
             return func.HttpResponse(
-                "Business context is missing.",
+                "Business context is missing or invalid.",
                 status_code=400,
-                headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+                headers={"Access-Control-Allow-Origin": "*"}
             )
 
         business_id = business_context["businessID"]
 
         # Fetch chat history
         chat_history = fetch_chat_history(business_id, session_id)
-
-        # OpenAI expects messages to be formatted as [{"role": "user", "content": "..."}, ...]
         messages = [{"role": message["role"], "content": message["content"]} for message in chat_history]
-
-        # Add the current query to the messages
         messages.append({"role": "user", "content": query})
 
-        # Add the business context to the assistant's context
-        if business_context:
-            messages.insert(0, {
-                "role": "system",
-                "content": f"You are helping to answer questions for a business with ID {business_context['businessID']}."
-            })
+        # Add system context
+        messages.insert(0, {
+            "role": "system",
+            "content": f"You are assisting a business with ID {business_id}. Respond in a professional, user-friendly tone."
+        })
 
-        # Store the user's query in the database
+        # Store the query
         store_chat_message(business_id, session_id, "user", query)
 
-        # Call OpenAI assistant with the full context
-        logging.info(f"Sending request to OpenAI API with model {LLM_MODEL}.")
+        # OpenAI API call
+        logging.info(f"Sending request to OpenAI with model {LLM_MODEL}.")
         response = openai.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
             functions=function_descriptions,
             function_call="auto",
             temperature=0.7,
-            top_p=0.95,
             max_tokens=800,
             user=ASSISTANT_ID
         )
 
         assistant_response = response.choices[0].message
-        logging.info(f"OpenAI assistant response: {assistant_response}")
 
-        # Check if the assistant decides to call a function
+        # Process function call if requested
         if hasattr(assistant_response, "function_call") and assistant_response.function_call:
             function_call = assistant_response.function_call
             function_name = function_call.name
             arguments = json.loads(function_call.arguments)
+            endpoint = function_endpoints.get(function_name)
 
-            logging.info(f"Function call requested: {function_name} with arguments {arguments}")
-
-            # Store the assistant's function call in the database
-            store_chat_message(
-                business_id,
-                session_id,
-                "assistant",
-                f"Function Call: {function_name} with arguments {json.dumps(arguments)}"
-            )
-
-            # Retrieve the endpoint for the function
-            endpoint_template = function_endpoints.get(function_name)
-            if not endpoint_template:
-                logging.error(f"No endpoint configured for function: {function_name}")
+            if not endpoint:
                 return func.HttpResponse(
                     f"No endpoint configured for function: {function_name}",
                     status_code=500,
-                    headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
+                    headers={"Access-Control-Allow-Origin": "*"}
                 )
 
-            # Handle partial matching and dynamic field construction
-            service_name = arguments.get("service_name")
-            fields = arguments.get("fields", ["name", "description", "price", "duration_minutes"])
+            # Handle dynamic GET construction
+            if function_name == "getBusinessServices":
+                fields = ",".join(arguments.get("fields", []))
+                endpoint = endpoint.format(businessID=arguments["businessID"], fields=fields)
 
-            # Fuzzy matching if service_name is provided
-            if service_name:
-                all_services = ["massage", "facial", "reiki", "deep tissue massage"]  # Example list, ideally fetch from DB
-                best_match = process.extractOne(service_name, all_services, scorer=fuzz.partial_ratio)
-                if best_match and best_match[1] > 80:  # Match threshold
-                    arguments["service_name"] = best_match[0]
-                else:
-                    logging.warning(f"Could not find an exact match for service: {service_name}")
-                    return func.HttpResponse(
-                        f"No exact match found for the service '{service_name}'. Please provide more details or try again.",
-                        status_code=404,
-                        headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-                    )
-
-            # Construct the endpoint
-            endpoint = endpoint_template.format(businessID=arguments["businessID"], fields=",".join(fields))
-
+            # Execute function call
             try:
-                function_response = requests.get(endpoint)
+                function_response = requests.get(endpoint) if function_name == "getBusinessServices" else requests.post(endpoint, json=arguments)
                 if function_response.status_code == 200:
                     result = function_response.json()
 
-                    # Store the result in the database
-                    store_chat_message(
-                        business_id,
-                        session_id,
-                        "assistant",
-                        json.dumps(result)
-                    )
+                    # Format response for getBusinessServices
+                    if function_name == "getBusinessServices":
+                        formatted_services = "\n".join([f"- {service['name']}: {service['description']}" for service in result.get('services', [])])
+                        result_message = f"Here are the services offered by the business:\n{formatted_services}" if formatted_services else "No services found for the business."
+                    else:
+                        result_message = json.dumps(result)
 
-                    return func.HttpResponse(
-                        json.dumps(result),
-                        status_code=200,
-                        headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-                    )
+                    # Store and return the formatted response
+                    store_chat_message(business_id, session_id, "assistant", result_message)
+                    return func.HttpResponse(result_message, status_code=200, headers={"Access-Control-Allow-Origin": "*"})
                 else:
-                    return func.HttpResponse(
-                        f"Failed to call function {function_name}: {function_response.text}",
-                        status_code=500,
-                        headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-                    )
-            except requests.RequestException as e:
-                return func.HttpResponse(
-                    f"Error calling function {function_name}: {e}",
-                    status_code=500,
-                    headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-                )
+                    return func.HttpResponse(f"Function call failed: {function_response.text}", status_code=500, headers={"Access-Control-Allow-Origin": "*"})
+            except Exception as e:
+                logging.error(f"Error during function call: {e}")
+                return func.HttpResponse(f"Error during function call: {e}", status_code=500, headers={"Access-Control-Allow-Origin": "*"})
 
-        # Store the assistant's response in the database
+        # Store and return assistant response
         store_chat_message(business_id, session_id, "assistant", assistant_response.content)
-
-        return func.HttpResponse(
-            assistant_response.content,
-            status_code=200,
-            headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-        )
+        return func.HttpResponse(assistant_response.content, status_code=200, headers={"Access-Control-Allow-Origin": "*"})
 
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
-        return func.HttpResponse(
-            "Internal Server Error",
-            status_code=500,
-            headers={"Access-Control-Allow-Origin": "http://localhost:3000"}
-        )
+        return func.HttpResponse("Internal Server Error", status_code=500, headers={"Access-Control-Allow-Origin": "*"})

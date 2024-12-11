@@ -21,7 +21,6 @@ httplib2==0.22.0
 httpx==0.27.2
 idna==3.10
 jiter==0.7.1
-logging==0.4.9.6
 oauthlib==3.2.2
 openai==1.55.0
 proto-plus==1.25.0
