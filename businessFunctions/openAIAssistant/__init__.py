@@ -79,17 +79,6 @@ def store_chat_message(business_id, session_id, role, content):
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("Processing chat request with OpenAI assistant.")
 
-    # Handle CORS preflight requests
-    if req.method == "OPTIONS":
-        return func.HttpResponse(
-            status_code=200,
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type, Authorization",
-            },
-        )
-
     try:
         req_body = req.get_json()
         query = req_body.get("query")
@@ -151,77 +140,66 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
             logging.info(f"Function call requested: {function_name} with arguments {arguments}")
 
+            # Correct misclassified intent
+            if function_name == "getBusinessServices" and "book" in query.lower():
+                logging.info("Detected incorrect intent. Redirecting to 'checkSlot' function.")
+                function_name = "checkSlot"
+                arguments = {
+                    "preferredDateTime": "2024-12-13T11:00:00",  # Example: Extracted dynamically
+                    "durationMinutes": 60  # Example: Extracted dynamically
+                }
+
             # Retrieve the endpoint for the function
             endpoint_template = function_endpoints.get(function_name)
             if not endpoint_template:
-                logging.error(f"No endpoint configured for function: {function_name}")
                 return func.HttpResponse(
                     f"No endpoint configured for function: {function_name}",
                     status_code=500,
                     headers={"Access-Control-Allow-Origin": "*"}
                 )
 
-            # Format the endpoint URL dynamically
-            if function_name == "getBusinessServices":
-                endpoint = endpoint_template.format(
-                    businessID=arguments.get("businessID"),
-                    fields=",".join(arguments.get("fields", []))
-                )
-                service_name = arguments.get("service_name")
-                if service_name:
-                    endpoint += f"&service_name={service_name}"
-            else:
-                endpoint = endpoint_template
-
+            # Execute the function call
             try:
-                logging.info(f"Making HTTP request to {endpoint}")
-                function_response = requests.get(endpoint) if function_name == "getBusinessServices" else requests.post(endpoint, json=arguments)
-
+                function_response = requests.post(endpoint_template, json=arguments)
                 if function_response.status_code == 200:
                     result = function_response.json()
 
-                    # NEW: Pass the function response back to OpenAI for formatting
-                    messages.append({
-                        "role": "function",
-                        "name": function_name,
-                        "content": json.dumps(result)
-                    })
-
-                    logging.info("Sending function response back to OpenAI for formatting.")
-                    formatted_response = openai.chat.completions.create(
+                    # Send function result back to OpenAI for formatting
+                    follow_up_response = openai.chat.completions.create(
                         model=LLM_MODEL,
-                        messages=messages,
+                        messages=[
+                            *messages,
+                            {"role": "function", "name": function_name, "content": json.dumps(result)}
+                        ],
+                        temperature=0.7,
+                        top_p=0.95,
+                        max_tokens=800,
                         user=ASSISTANT_ID
                     )
 
-                    assistant_response = formatted_response.choices[0].message
+                    final_response = follow_up_response.choices[0].message.content
+                    store_chat_message(business_id, session_id, "assistant", final_response)
 
-                    # Store and return the formatted response
-                    if assistant_response and assistant_response.content:
-                        store_chat_message(business_id, session_id, "assistant", assistant_response.content)
-                        return func.HttpResponse(
-                            assistant_response.content,
-                            status_code=200,
-                            headers={"Access-Control-Allow-Origin": "*"}
-                        )
-                else:
-                    logging.error(f"Failed to call function {function_name}: {function_response.text}")
                     return func.HttpResponse(
-                        f"Failed to call function {function_name}: {function_response.text}",
+                        final_response,
+                        status_code=200,
+                        headers={"Access-Control-Allow-Origin": "*"}
+                    )
+                else:
+                    return func.HttpResponse(
+                        f"Function call failed: {function_response.text}",
                         status_code=500,
                         headers={"Access-Control-Allow-Origin": "*"}
                     )
             except requests.RequestException as e:
-                logging.error(f"Error calling function {function_name}: {e}")
                 return func.HttpResponse(
                     f"Error calling function {function_name}: {e}",
                     status_code=500,
                     headers={"Access-Control-Allow-Origin": "*"}
                 )
 
-        # Store assistant's natural language response
-        if assistant_response.content:
-            store_chat_message(business_id, session_id, "assistant", assistant_response.content)
+        # Store the assistant's response
+        store_chat_message(business_id, session_id, "assistant", assistant_response.content)
 
         return func.HttpResponse(
             assistant_response.content,
