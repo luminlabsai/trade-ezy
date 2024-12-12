@@ -8,7 +8,6 @@ import psycopg2
 from uuid import uuid4
 from function_descriptions import function_descriptions
 from function_endpoints import function_endpoints
-from fuzzywuzzy import fuzz, process  # For fuzzy matching of service names
 
 # Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "MISSING_KEY")
@@ -49,7 +48,6 @@ def fetch_chat_history(business_id, session_id, limit=CHAT_HISTORY_LIMIT):
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-
         return [{"role": row[0], "content": row[1]} for row in rows]
     except psycopg2.Error as e:
         logging.error(f"Error fetching chat history: {e}")
@@ -153,14 +151,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
             logging.info(f"Function call requested: {function_name} with arguments {arguments}")
 
-            # Store the assistant's function call in the database
-            store_chat_message(
-                business_id,
-                session_id,
-                "assistant",
-                f"Function Call: {function_name} with arguments {json.dumps(arguments)}"
-            )
-
             # Retrieve the endpoint for the function
             endpoint_template = function_endpoints.get(function_name)
             if not endpoint_template:
@@ -171,54 +161,74 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     headers={"Access-Control-Allow-Origin": "*"}
                 )
 
-            # Handle `getBusinessServices`
+            # Format the endpoint URL dynamically
             if function_name == "getBusinessServices":
-                fields = ",".join(arguments.get("fields", []))
-                endpoint = endpoint_template.format(businessID=arguments["businessID"], fields=fields)
+                endpoint = endpoint_template.format(
+                    businessID=arguments.get("businessID"),
+                    fields=",".join(arguments.get("fields", []))
+                )
+                service_name = arguments.get("service_name")
+                if service_name:
+                    endpoint += f"&service_name={service_name}"
+            else:
+                endpoint = endpoint_template
 
-                # Add service_name as query parameter if provided
-                if "service_name" in arguments:
-                    endpoint += f"&service_name={arguments['service_name']}"
+            try:
+                logging.info(f"Making HTTP request to {endpoint}")
+                function_response = requests.get(endpoint) if function_name == "getBusinessServices" else requests.post(endpoint, json=arguments)
 
-                try:
-                    function_response = requests.get(endpoint)
-                    if function_response.status_code == 200:
-                        result = function_response.json()
+                if function_response.status_code == 200:
+                    result = function_response.json()
 
-                        # Format the response based on fields
-                        requested_fields = arguments.get("fields", [])
-                        formatted_services = []
-                        for service in result.get("services", []):
-                            parts = []
-                            if "name" in requested_fields:
-                                parts.append(service.get("name", "Unknown"))
-                            if "price" in requested_fields:
-                                parts.append(f"${service.get('price', 'N/A')}")
-                            if "duration" in requested_fields:
-                                parts.append(f"{service.get('duration', 'N/A')} minutes")
-                            formatted_services.append(": ".join(parts))
+                    # NEW: Pass the function response back to OpenAI for formatting
+                    messages.append({
+                        "role": "function",
+                        "name": function_name,
+                        "content": json.dumps(result)
+                    })
 
-                        response_message = "\n".join(formatted_services) if formatted_services else "No services found."
+                    logging.info("Sending function response back to OpenAI for formatting.")
+                    formatted_response = openai.chat.completions.create(
+                        model=LLM_MODEL,
+                        messages=messages,
+                        user=ASSISTANT_ID
+                    )
 
-                        # Store and return the response
-                        store_chat_message(business_id, session_id, "assistant", response_message)
-                        return func.HttpResponse(response_message, status_code=200, headers={"Access-Control-Allow-Origin": "*"})
-                    else:
+                    assistant_response = formatted_response.choices[0].message
+
+                    # Store and return the formatted response
+                    if assistant_response and assistant_response.content:
+                        store_chat_message(business_id, session_id, "assistant", assistant_response.content)
                         return func.HttpResponse(
-                            f"Failed to call function {function_name}: {function_response.text}",
-                            status_code=500,
+                            assistant_response.content,
+                            status_code=200,
                             headers={"Access-Control-Allow-Origin": "*"}
                         )
-                except requests.RequestException as e:
+                else:
+                    logging.error(f"Failed to call function {function_name}: {function_response.text}")
                     return func.HttpResponse(
-                        f"Error calling function {function_name}: {e}",
+                        f"Failed to call function {function_name}: {function_response.text}",
                         status_code=500,
                         headers={"Access-Control-Allow-Origin": "*"}
                     )
+            except requests.RequestException as e:
+                logging.error(f"Error calling function {function_name}: {e}")
+                return func.HttpResponse(
+                    f"Error calling function {function_name}: {e}",
+                    status_code=500,
+                    headers={"Access-Control-Allow-Origin": "*"}
+                )
 
-        # Store and return assistant's response
-        store_chat_message(business_id, session_id, "assistant", assistant_response.content)
-        return func.HttpResponse(assistant_response.content, status_code=200, headers={"Access-Control-Allow-Origin": "*"})
+        # Store assistant's natural language response
+        if assistant_response.content:
+            store_chat_message(business_id, session_id, "assistant", assistant_response.content)
+
+        return func.HttpResponse(
+            assistant_response.content,
+            status_code=200,
+            headers={"Access-Control-Allow-Origin": "*"}
+        )
+
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
         return func.HttpResponse(
