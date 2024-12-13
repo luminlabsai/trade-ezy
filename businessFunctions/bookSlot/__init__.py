@@ -68,43 +68,138 @@ def add_calendar_entry(calendar_id, summary, description, start_time, end_time):
         raise e
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info("Processing chat request with OpenAI assistant.")
+
     try:
         req_body = req.get_json()
-        preferred_date_time = req_body.get('preferredDateTime')
-        duration_minutes = req_body.get('durationMinutes')
-        client_name = req_body.get('clientName')
-        appointment_purpose = req_body.get('appointmentPurpose')
+        query = req_body.get("query")
+        business_context = req_body.get("businessContext")
+        session_id = req_body.get("sessionID") or str(uuid4())
 
-        if not preferred_date_time or not duration_minutes or not client_name or not appointment_purpose:
+        if not query:
             return func.HttpResponse(
-                json.dumps({"error": "All parameters are required: preferredDateTime, durationMinutes, clientName, appointmentPurpose"}),
+                "Query is missing.",
                 status_code=400,
-                mimetype="application/json"
+                headers={"Access-Control-Allow-Origin": "*"}
             )
 
-        start_time = datetime.datetime.fromisoformat(preferred_date_time).astimezone(datetime.timezone.utc)
-        end_time = start_time + datetime.timedelta(minutes=duration_minutes)
+        if not business_context:
+            return func.HttpResponse(
+                "Business context is missing.",
+                status_code=400,
+                headers={"Access-Control-Allow-Origin": "*"}
+            )
 
-        start_time_str = start_time.isoformat()
-        end_time_str = end_time.isoformat()
+        business_id = business_context["businessID"]
 
-        event = add_calendar_entry(
-            CALENDAR_ID,
-            f'Appointment with {client_name}',
-            appointment_purpose,
-            start_time_str,
-            end_time_str
+        chat_history = fetch_chat_history(business_id, session_id)
+        messages = [{"role": message["role"], "content": message["content"]} for message in chat_history]
+
+        messages.append({"role": "user", "content": query})
+
+        messages.insert(0, {
+            "role": "system",
+            "content": f"You are helping to answer questions for a business with ID {business_context['businessID']}."
+        })
+
+        store_chat_message(business_id, session_id, "user", query)
+
+        logging.info(f"Sending request to OpenAI API with model {LLM_MODEL}.")
+        response = openai.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            functions=function_descriptions,
+            function_call="auto",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=800,
+            user=ASSISTANT_ID
         )
 
+        assistant_response = response.choices[0].message
+
+        if hasattr(assistant_response, "function_call") and assistant_response.function_call:
+            function_call = assistant_response.function_call
+            function_name = function_call.name
+            arguments = json.loads(function_call.arguments)
+
+            logging.info(f"Function call requested: {function_name} with arguments {arguments}")
+
+            # Intercept misclassified intents
+            if function_name == "getBusinessServices" and any(keyword in query.lower() for keyword in ["available", "slot", "time"]):
+                logging.info("Redirecting misclassified intent to 'checkSlot' function.")
+                function_name = "checkSlot"
+                arguments = {
+                    "preferredDateTime": "2024-12-15T13:00:00",  # Extract dynamically in production
+                    "durationMinutes": 60
+                }
+
+            endpoint_template = function_endpoints.get(function_name)
+            if not endpoint_template:
+                return func.HttpResponse(
+                    f"No endpoint configured for function: {function_name}",
+                    status_code=500,
+                    headers={"Access-Control-Allow-Origin": "*"}
+                )
+
+            try:
+                if function_name in ["checkSlot", "bookSlot"]:
+                    endpoint = endpoint_template
+                    function_response = requests.post(endpoint, json=arguments)
+                else:
+                    business_id = arguments.get("businessID")
+                    fields = ",".join(arguments.get("fields", ["name", "description", "price"]))
+                    service_name = arguments.get("service_name")
+                    encoded_fields = quote(fields)
+                    endpoint = endpoint_template.format(businessID=business_id, fields=encoded_fields)
+                    if service_name:
+                        endpoint += f"&service_name={quote(service_name)}"
+                    function_response = requests.get(endpoint)
+
+                function_response.raise_for_status()
+                result = function_response.json()
+                logging.info(f"{function_name} response: {result}")
+
+                follow_up_response = openai.chat.completions.create(
+                    model=LLM_MODEL,
+                    messages=[
+                        *messages,
+                        {"role": "function", "name": function_name, "content": json.dumps(result)}
+                    ],
+                    temperature=0.7,
+                    top_p=0.95,
+                    max_tokens=800,
+                    user=ASSISTANT_ID
+                )
+
+                final_response = follow_up_response.choices[0].message.content
+                store_chat_message(business_id, session_id, "assistant", final_response)
+
+                return func.HttpResponse(
+                    final_response,
+                    status_code=200,
+                    headers={"Access-Control-Allow-Origin": "*"}
+                )
+            except requests.RequestException as e:
+                logging.error(f"Error calling {function_name}: {e}")
+                return func.HttpResponse(
+                    f"Error calling function {function_name}: {e}",
+                    status_code=500,
+                    headers={"Access-Control-Allow-Origin": "*"}
+                )
+
+        store_chat_message(business_id, session_id, "assistant", assistant_response.content)
+
         return func.HttpResponse(
-            json.dumps({"result": f"Appointment scheduled with {client_name} for {appointment_purpose} on {start_time_str}", "eventId": event.get('id')}),
+            assistant_response.content,
             status_code=200,
-            mimetype="application/json"
+            headers={"Access-Control-Allow-Origin": "*"}
         )
+
     except Exception as e:
-        logger.error(f"Error in booking slot: {e}")
+        logging.error(f"Unexpected error: {e}")
         return func.HttpResponse(
-            json.dumps({"error": str(e)}),
+            "Internal Server Error",
             status_code=500,
-            mimetype="application/json"
+            headers={"Access-Control-Allow-Origin": "*"}
         )

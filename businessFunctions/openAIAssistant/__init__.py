@@ -6,6 +6,7 @@ import json
 import azure.functions as func
 import psycopg2
 from uuid import uuid4
+from urllib.parse import quote
 from function_descriptions import function_descriptions
 from function_endpoints import function_endpoints
 
@@ -140,15 +141,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
             logging.info(f"Function call requested: {function_name} with arguments {arguments}")
 
-            # Correct misclassified intent
-            if function_name == "getBusinessServices" and "book" in query.lower():
-                logging.info("Detected incorrect intent. Redirecting to 'checkSlot' function.")
-                function_name = "checkSlot"
-                arguments = {
-                    "preferredDateTime": "2024-12-13T11:00:00",  # Example: Extracted dynamically
-                    "durationMinutes": 60  # Example: Extracted dynamically
-                }
-
             # Retrieve the endpoint for the function
             endpoint_template = function_endpoints.get(function_name)
             if not endpoint_template:
@@ -158,40 +150,55 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     headers={"Access-Control-Allow-Origin": "*"}
                 )
 
-            # Execute the function call
+            # Replace placeholders for dynamic parameters
             try:
-                function_response = requests.post(endpoint_template, json=arguments)
-                if function_response.status_code == 200:
-                    result = function_response.json()
+                if function_name == "getBusinessServices":
+                    business_id = arguments.get("businessID")
+                    fields = ",".join(arguments.get("fields", ["name", "description", "price"]))  # Default fields
+                    service_name = arguments.get("service_name")
 
-                    # Send function result back to OpenAI for formatting
-                    follow_up_response = openai.chat.completions.create(
-                        model=LLM_MODEL,
-                        messages=[
-                            *messages,
-                            {"role": "function", "name": function_name, "content": json.dumps(result)}
-                        ],
-                        temperature=0.7,
-                        top_p=0.95,
-                        max_tokens=800,
-                        user=ASSISTANT_ID
-                    )
+                    # URL-encode fields and service_name
+                    encoded_fields = quote(fields)
+                    endpoint = endpoint_template.format(businessID=business_id, fields=encoded_fields)
+                    if service_name:
+                        endpoint += f"&service_name={quote(service_name)}"
 
-                    final_response = follow_up_response.choices[0].message.content
-                    store_chat_message(business_id, session_id, "assistant", final_response)
+                    # Log the constructed endpoint
+                    logging.info(f"Constructed URL for getBusinessServices: {endpoint}")
 
-                    return func.HttpResponse(
-                        final_response,
-                        status_code=200,
-                        headers={"Access-Control-Allow-Origin": "*"}
-                    )
                 else:
-                    return func.HttpResponse(
-                        f"Function call failed: {function_response.text}",
-                        status_code=500,
-                        headers={"Access-Control-Allow-Origin": "*"}
-                    )
+                    endpoint = endpoint_template
+
+                # Make the HTTP request
+                logging.info(f"Calling {function_name} at {endpoint} with arguments: {arguments}")
+                function_response = requests.get(endpoint) if function_name == "getBusinessServices" else requests.post(endpoint, json=arguments)
+                function_response.raise_for_status()
+                result = function_response.json()
+                logging.info(f"{function_name} response: {result}")
+
+                # Send function result back to OpenAI for formatting
+                follow_up_response = openai.chat.completions.create(
+                    model=LLM_MODEL,
+                    messages=[
+                        *messages,
+                        {"role": "function", "name": function_name, "content": json.dumps(result)}
+                    ],
+                    temperature=0.7,
+                    top_p=0.95,
+                    max_tokens=800,
+                    user=ASSISTANT_ID
+                )
+
+                final_response = follow_up_response.choices[0].message.content
+                store_chat_message(business_id, session_id, "assistant", final_response)
+
+                return func.HttpResponse(
+                    final_response,
+                    status_code=200,
+                    headers={"Access-Control-Allow-Origin": "*"}
+                )
             except requests.RequestException as e:
+                logging.error(f"Error calling {function_name}: {e}")
                 return func.HttpResponse(
                     f"Error calling function {function_name}: {e}",
                     status_code=500,
@@ -214,3 +221,4 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             status_code=500,
             headers={"Access-Control-Allow-Origin": "*"}
         )
+

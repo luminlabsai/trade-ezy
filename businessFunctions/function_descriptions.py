@@ -25,7 +25,7 @@ function_descriptions = [
         }
     },
     {
-        "name": "check_slot",
+        "name": "checkSlot",
         "description": "Check the availability of a calendar slot.",
         "parameters": {
             "type": "object",
@@ -43,7 +43,7 @@ function_descriptions = [
         }
     },
     {
-        "name": "book_slot",
+        "name": "bookSlot",
         "description": "Book a calendar slot for a client.",
         "parameters": {
             "type": "object",
