@@ -82,7 +82,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 mimetype="application/json"
             )
 
-        start_time = datetime.datetime.fromisoformat(preferred_date_time).astimezone(datetime.timezone.utc)
+        start_time = datetime.fromisoformat(preferred_date_time).astimezone(datetime.timezone.utc)
         end_time = start_time + datetime.timedelta(minutes=duration_minutes)
 
         start_time_str = start_time.isoformat()

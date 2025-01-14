@@ -1,71 +1,42 @@
 function_descriptions = [
     {
         "name": "getBusinessServices",
-        "description": "Retrieve the services offered by a business.",
+        "description": "Retrieve details about the services a business offers.",
         "parameters": {
             "type": "object",
             "properties": {
-                "businessID": {
-                    "type": "string",
-                    "description": "The unique identifier of the business."
-                },
-                "fields": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    },
-                    "description": "The list of fields to include in the response."
-                },
-                "service_name": {
-                    "type": "string",
-                    "description": "The specific service to retrieve details for (optional)."
-                }
+                "businessID": {"type": "string", "description": "The unique ID of the business."},
+                "fields": {"type": "array", "items": {"type": "string"}, "description": "Fields to retrieve (e.g., name, price)."},
+                "service_name": {"type": "string", "description": "Optional service name to filter results."}
             },
-            "required": ["businessID", "fields"]
+            "required": ["businessID"]
         }
     },
     {
         "name": "checkSlot",
-        "description": "Check the availability of a calendar slot.",
+        "description": "Check the availability of a slot for a specific service on a specific date and time.",
         "parameters": {
             "type": "object",
             "properties": {
-                "preferredDateTime": {
-                    "type": "string",
-                    "description": "The preferred start time in ISO 8601 format."
-                },
-                "durationMinutes": {
-                    "type": "integer",
-                    "description": "The duration of the appointment in minutes."
-                }
+                "businessID": {"type": "string", "description": "The unique ID of the business."},
+                "serviceID": {"type": "string", "description": "The unique ID of the service."},
+                "preferredDateTime": {"type": "string", "description": "The preferred date and time for the slot."}
             },
-            "required": ["preferredDateTime", "durationMinutes"]
+            "required": ["businessID", "serviceID", "preferredDateTime"]
         }
     },
     {
         "name": "bookSlot",
-        "description": "Book a calendar slot for a client.",
+        "description": "Book a slot for a specific service on a specific date and time.",
         "parameters": {
             "type": "object",
             "properties": {
-                "preferredDateTime": {
-                    "type": "string",
-                    "description": "The preferred start time in ISO 8601 format."
-                },
-                "durationMinutes": {
-                    "type": "integer",
-                    "description": "The duration of the appointment in minutes."
-                },
-                "clientName": {
-                    "type": "string",
-                    "description": "The name of the client booking the appointment."
-                },
-                "appointmentPurpose": {
-                    "type": "string",
-                    "description": "The purpose of the appointment."
-                }
+                "businessID": {"type": "string", "description": "The unique ID of the business."},
+                "serviceID": {"type": "string", "description": "The unique ID of the service."},
+                "preferredDateTime": {"type": "string", "description": "The preferred date and time for the booking."},
+                "clientName": {"type": "string", "description": "The name of the client making the booking."}
             },
-            "required": ["preferredDateTime", "durationMinutes", "clientName", "appointmentPurpose"]
+            "required": ["businessID", "serviceID", "preferredDateTime", "clientName"]
         }
     }
 ]
