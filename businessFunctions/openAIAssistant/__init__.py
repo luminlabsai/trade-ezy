@@ -116,6 +116,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # Helper Functions
+import json
+import logging
+import requests
+import azure.functions as func
+from urllib.parse import quote
+from function_endpoints import function_endpoints
+
 def handle_function_call(assistant_response, messages, business_id, session_id):
     """Handle function call responses."""
     try:
@@ -133,7 +140,6 @@ def handle_function_call(assistant_response, messages, business_id, session_id):
 
         # Construct the endpoint URL and handle query parameters
         if function_name == "getBusinessServices":
-            # Build the URL for getBusinessServices
             business_id = arguments.get("businessID")
             service_name = arguments.get("service_name", "")
             fields = "name,description,price,duration"
@@ -144,7 +150,6 @@ def handle_function_call(assistant_response, messages, business_id, session_id):
             if service_name:
                 endpoint += f"&service_name={quote(service_name)}"
         else:
-            # For other functions, use the endpoint directly
             endpoint = endpoint_template
 
         logging.info(f"Calling endpoint: {endpoint}")
@@ -158,47 +163,23 @@ def handle_function_call(assistant_response, messages, business_id, session_id):
         response.raise_for_status()
         result = response.json()
 
-        # Handle the response based on function
-        if function_name == "getBusinessServices":
-            return format_response(result, messages, function_name)
+        # Format the response using OpenAI
+        formatted_response = format_response(result, messages, function_name)
 
-        elif function_name == "checkSlot":
-            slot_availability = result
-            if slot_availability.get("isAvailable"):
-                # Prepare arguments for booking
-                book_slot_arguments = {
-                    "businessID": arguments["businessID"],
-                    "service_name": arguments["service_name"],
-                    "preferredDateTime": arguments["preferredDateTime"],
-                    "clientName": arguments.get("clientName", "Default Client")
-                }
-                logging.info(f"Slot available. Preparing to call bookSlot with arguments: {book_slot_arguments}")
-                next_function_call = {
-                    "role": "assistant",
-                    "function_call": {
-                        "name": "bookSlot",
-                        "arguments": json.dumps(book_slot_arguments)
-                    }
-                }
-                return handle_function_call(next_function_call, messages, business_id, session_id)
+        # Store the formatted response in the database
+        store_chat_message(
+            business_id,
+            session_id,
+            "assistant",
+            formatted_response  # Ensure only the string is stored
+        )
 
-            return func.HttpResponse(
-                json.dumps({"message": "Slot is not available. Please suggest another time."}),
-                status_code=200,
-                mimetype="application/json"
-            )
-
-        elif function_name == "bookSlot":
-            booking_confirmation = result
-            logging.info(f"Booking confirmed: {booking_confirmation}")
-            return func.HttpResponse(
-                json.dumps({"message": "Booking confirmed!", "details": booking_confirmation}),
-                status_code=200,
-                mimetype="application/json"
-            )
-
-        else:
-            raise ValueError(f"Unhandled function name: {function_name}")
+        # Return the formatted response to the user
+        return func.HttpResponse(
+            json.dumps({"response": formatted_response}),
+            status_code=200,
+            mimetype="application/json"
+        )
 
     except requests.exceptions.RequestException as e:
         logging.error(f"HTTP request error: {e}")
@@ -214,16 +195,17 @@ def handle_function_call(assistant_response, messages, business_id, session_id):
             status_code=500,
             mimetype="application/json"
         )
+
     
 def format_response(result, messages, function_name):
     """Format the function response using OpenAI."""
     logging.info(f"Formatting function response for {function_name}. Result: {result}")
 
     try:
-        # Add the function response as a "function" message to the chat history
+        # Add function response to messages
         messages.append({"role": "function", "name": function_name, "content": json.dumps(result)})
 
-        # Create a follow-up request to OpenAI to format the response naturally
+        # Create a follow-up request to OpenAI
         follow_up_response = openai.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
@@ -233,27 +215,16 @@ def format_response(result, messages, function_name):
             user=ASSISTANT_ID
         )
 
+        # Extract formatted message content
         assistant_message = follow_up_response.choices[0].message
-
-        # Check if the assistant suggests another function call
-        if hasattr(assistant_message, "function_call") and assistant_message.function_call:
-            logging.info(f"Assistant requested another function: {assistant_message.function_call.name}")
-            return handle_function_call(assistant_message, messages, None, None)
-
-        # Return the assistant's formatted response
-        return func.HttpResponse(
-            json.dumps({"response": assistant_message.content}),
-            status_code=200,
-            mimetype="application/json"
-        )
+        if assistant_message.content:
+            return assistant_message.content
+        else:
+            raise ValueError("No content found in assistant response.")
 
     except Exception as e:
         logging.error(f"Error formatting function response: {e}")
-        return func.HttpResponse(
-            json.dumps({"error": f"Error formatting function response: {e}"}),
-            status_code=500,
-            mimetype="application/json"
-        )
+        raise
 
 
 def fetch_chat_history(business_id, session_id, limit=CHAT_HISTORY_LIMIT):
