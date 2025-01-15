@@ -55,7 +55,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         # Fetch chat history
         chat_history = fetch_chat_history(business_id, session_id)
-        messages = [{"role": message["role"], "content": message["content"]} for message in chat_history]
+        messages = [
+            {"role": message["role"], "content": message["content"]}
+            for message in chat_history
+            if message["role"] in {"user", "assistant", "system"}
+        ]
 
         # Add current query to messages
         messages.append({"role": "user", "content": query})
@@ -75,7 +79,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         })
 
         # Store the user's query
-        store_chat_message(business_id, session_id, "user", query)
+        store_chat_message(business_id, session_id, "user", query, "formatted")
 
         # Call OpenAI assistant
         logging.info(f"Sending request to OpenAI API with model {LLM_MODEL}.")
@@ -92,18 +96,40 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         # Parse assistant's response
         assistant_response = response.choices[0].message
-        logging.info(f"Assistant response: {assistant_response}")
+        logging.info(f"Assistant raw response: {assistant_response}")
 
-        # Handle function call if suggested
-        if hasattr(assistant_response, "function_call") and assistant_response.function_call:
-            return handle_function_call(assistant_response, messages, business_id, session_id)
+        # Convert raw response to a JSON-serializable format
+        assistant_raw_message = {
+            "role": assistant_response.role,
+            "content": assistant_response.content,
+            "function_call": {
+                "name": assistant_response.function_call.name,
+                "arguments": assistant_response.function_call.arguments
+            } if assistant_response.function_call else None
+        }
 
-        # Store assistant's response if no function is called
-        store_chat_message(business_id, session_id, "assistant", assistant_response.content)
+        # Store the raw response in the database
+        store_chat_message(business_id, session_id, "assistant", json.dumps(assistant_raw_message), "raw")
+
+        # Check for a function call
+        if assistant_response.function_call:
+            # Handle function call
+            formatted_response = handle_function_call(assistant_response, messages, business_id, session_id)
+            if isinstance(formatted_response, func.HttpResponse):
+                formatted_content = json.loads(formatted_response.get_body())
+                store_chat_message(business_id, session_id, "assistant", formatted_content["response"], "formatted")
+                return func.HttpResponse(
+                    formatted_content["response"],
+                    status_code=200,
+                    mimetype="text/plain"
+                )
+
+        # Store and return the assistant's direct response
+        store_chat_message(business_id, session_id, "assistant", assistant_response.content, "formatted")
         return func.HttpResponse(
-            json.dumps({"response": assistant_response.content}),
+            assistant_response.content,
             status_code=200,
-            mimetype="application/json"
+            mimetype="text/plain"
         )
 
     except Exception as e:
@@ -114,93 +140,48 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json"
         )
 
-
 # Helper Functions
 def handle_function_call(assistant_response, messages, business_id, session_id):
     """Handle function call responses."""
     try:
-        # Extract function call details
         function_call = assistant_response.function_call
         function_name = function_call.name
         arguments = json.loads(function_call.arguments)
 
         logging.info(f"Handling function call: {function_name} with arguments: {arguments}")
 
-        # Retrieve the endpoint template for the function
-        endpoint_template = function_endpoints.get(function_name)
-        if not endpoint_template:
+        endpoint = function_endpoints.get(function_name)
+        if not endpoint:
             raise ValueError(f"No endpoint configured for function: {function_name}")
 
-        # Construct the endpoint URL and handle query parameters
         if function_name == "getBusinessServices":
-            # Build the URL for getBusinessServices
-            business_id = arguments.get("businessID")
-            service_name = arguments.get("service_name", "")
-            fields = "name,description,price,duration"
-            endpoint = endpoint_template.format(
-                businessID=quote(business_id),
-                fields=quote(fields)
+            # Call the getBusinessServices endpoint
+            endpoint_url = endpoint.format(
+                businessID=quote(arguments["businessID"]),
+                fields=quote(",".join(arguments["fields"]))
             )
-            if service_name:
-                endpoint += f"&service_name={quote(service_name)}"
-        else:
-            # For other functions, use the endpoint directly
-            endpoint = endpoint_template
+            response = requests.get(endpoint_url)
+            response.raise_for_status()
+            result = response.json()
+            formatted_response = format_response(result, messages, function_name)
 
-        logging.info(f"Calling endpoint: {endpoint}")
+            # Return formatted response as HttpResponse
+            return func.HttpResponse(
+                json.dumps({"response": formatted_response}),
+                status_code=200,
+                mimetype="application/json"
+            )
 
-        # Make the API call
-        if function_name == "getBusinessServices":
-            response = requests.get(endpoint)
-        else:
-            response = requests.post(endpoint, json=arguments)
-
+        # Handle other function calls (checkSlot, bookSlot)
+        response = requests.post(endpoint, json=arguments)
         response.raise_for_status()
-        result = response.json()
+        return func.HttpResponse(
+            json.dumps(response.json()),
+            status_code=200,
+            mimetype="application/json"
+        )
 
-        # Handle the response based on function
-        if function_name == "getBusinessServices":
-            return format_response(result, messages, function_name)
-
-        elif function_name == "checkSlot":
-            slot_availability = result
-            if slot_availability.get("isAvailable"):
-                # Prepare arguments for booking
-                book_slot_arguments = {
-                    "businessID": arguments["businessID"],
-                    "service_name": arguments["service_name"],
-                    "preferredDateTime": arguments["preferredDateTime"],
-                    "clientName": arguments.get("clientName", "Default Client")
-                }
-                logging.info(f"Slot available. Preparing to call bookSlot with arguments: {book_slot_arguments}")
-                next_function_call = {
-                    "role": "assistant",
-                    "function_call": {
-                        "name": "bookSlot",
-                        "arguments": json.dumps(book_slot_arguments)
-                    }
-                }
-                return handle_function_call(next_function_call, messages, business_id, session_id)
-
-            return func.HttpResponse(
-                json.dumps({"message": "Slot is not available. Please suggest another time."}),
-                status_code=200,
-                mimetype="application/json"
-            )
-
-        elif function_name == "bookSlot":
-            booking_confirmation = result
-            logging.info(f"Booking confirmed: {booking_confirmation}")
-            return func.HttpResponse(
-                json.dumps({"message": "Booking confirmed!", "details": booking_confirmation}),
-                status_code=200,
-                mimetype="application/json"
-            )
-
-        else:
-            raise ValueError(f"Unhandled function name: {function_name}")
-
-    except requests.exceptions.RequestException as e:
+    except requests.RequestException as e:
         logging.error(f"HTTP request error: {e}")
         return func.HttpResponse(
             json.dumps({"error": f"HTTP request failed: {e}"}),
@@ -214,16 +195,17 @@ def handle_function_call(assistant_response, messages, business_id, session_id):
             status_code=500,
             mimetype="application/json"
         )
+
     
 def format_response(result, messages, function_name):
     """Format the function response using OpenAI."""
     logging.info(f"Formatting function response for {function_name}. Result: {result}")
 
     try:
-        # Add the function response as a "function" message to the chat history
+        # Add the function response as a message
         messages.append({"role": "function", "name": function_name, "content": json.dumps(result)})
 
-        # Create a follow-up request to OpenAI to format the response naturally
+        # Call OpenAI to format the response naturally
         follow_up_response = openai.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
@@ -233,27 +215,13 @@ def format_response(result, messages, function_name):
             user=ASSISTANT_ID
         )
 
-        assistant_message = follow_up_response.choices[0].message
-
-        # Check if the assistant suggests another function call
-        if hasattr(assistant_message, "function_call") and assistant_message.function_call:
-            logging.info(f"Assistant requested another function: {assistant_message.function_call.name}")
-            return handle_function_call(assistant_message, messages, None, None)
-
-        # Return the assistant's formatted response
-        return func.HttpResponse(
-            json.dumps({"response": assistant_message.content}),
-            status_code=200,
-            mimetype="application/json"
-        )
+        formatted_message = follow_up_response.choices[0].message.content
+        logging.info(f"Formatted response: {formatted_message}")
+        return formatted_message
 
     except Exception as e:
         logging.error(f"Error formatting function response: {e}")
-        return func.HttpResponse(
-            json.dumps({"error": f"Error formatting function response: {e}"}),
-            status_code=500,
-            mimetype="application/json"
-        )
+        return "I'm sorry, there was an error formatting the response."
 
 
 def fetch_chat_history(business_id, session_id, limit=CHAT_HISTORY_LIMIT):
@@ -275,18 +243,33 @@ def fetch_chat_history(business_id, session_id, limit=CHAT_HISTORY_LIMIT):
         logging.error(f"Error fetching chat history: {e}")
         return []
 
-def store_chat_message(business_id, session_id, role, content):
+def store_chat_message(business_id, session_id, role, content, message_type="formatted"):
+    """
+    Store a chat message in the database.
+    :param business_id: The ID of the business.
+    :param session_id: The session ID for the conversation.
+    :param role: The role of the message (e.g., 'user', 'assistant').
+    :param content: The message content.
+    :param message_type: 'raw' or 'formatted' for assistant messages.
+    """
     try:
         conn = psycopg2.connect(
             host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
         )
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO chathistory (business_id, session_id, role, content) VALUES (%s, %s, %s, %s)",
-            (business_id, session_id, role, content)
+            """
+            INSERT INTO chathistory (business_id, session_id, role, content, message_type)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (business_id, session_id, role, content, message_type)
         )
         conn.commit()
         cursor.close()
         conn.close()
+        logging.info(f"Stored message: Role={role}, Type={message_type}, Content={content}")
     except psycopg2.Error as e:
         logging.error(f"Error storing chat message: {e}")
+
+
+
