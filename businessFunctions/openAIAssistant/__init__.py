@@ -71,10 +71,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 f"You are assisting with service and booking inquiries for a business. "
                 f"The unique ID of the business is {business_id}. "
                 f"For queries about services or bookings, use this ID to retrieve details. "
+                f"respond as if you're aware of all prior messages in the conversation."
                 f"Do not ask the user for the businessID unless explicitly required."
                 f"For queries about booking a service, first retrieve the service details using 'getBusinessServices'. "
                 f"Then check slot availability using 'checkSlot'. If a slot is available, proceed to book it using 'bookSlot'. "
                 f"Always confirm with the user before booking."
+                f"Extract and convert date and time to ISO 8601 format (YYYY-MM-DDTHH:MM+10:00)."
             )
         })
 
@@ -155,11 +157,13 @@ def handle_function_call(assistant_response, messages, business_id, session_id):
             raise ValueError(f"No endpoint configured for function: {function_name}")
 
         if function_name == "getBusinessServices":
-            # Call the getBusinessServices endpoint
+            # Ensure 'fields' is present in arguments with a default value
+            fields = ",".join(arguments.get("fields", ["name", "description", "price", "duration"]))
             endpoint_url = endpoint.format(
                 businessID=quote(arguments["businessID"]),
-                fields=quote(",".join(arguments["fields"]))
+                fields=quote(fields)
             )
+            logging.info(f"Calling endpoint: {endpoint_url}")
             response = requests.get(endpoint_url)
             response.raise_for_status()
             result = response.json()
