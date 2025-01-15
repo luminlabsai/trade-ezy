@@ -1,22 +1,22 @@
 import logging
 import json
-import datetime
+from datetime import datetime, timedelta
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-import azure.functions as func  # Import Azure Functions module
+import azure.functions as func
+import os
+import pytz  # For time zone handling
 
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-SERVICE_ACCOUNT_FILE = 'service-account.json'  # Adjust the path if necessary
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 CALENDAR_ID = 'luminlabsdemo@gmail.com'
 
-import os
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
+# Define AEST time zone (UTC+10, no daylight saving)
+AEST = pytz.timezone('Australia/Brisbane')
 
 def get_calendar_service():
     # Retrieve the private key directly from the environment
@@ -38,13 +38,8 @@ def get_calendar_service():
         "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{os.getenv('GOOGLE_CLIENT_EMAIL')}"
     }
 
-    # Debugging log for the private key
-    if "PRIVATE KEY" in private_key_processed:
-        logging.info(f"Private Key Loaded: {private_key_processed[:30]}...{private_key_processed[-30:]}")
-    else:
-        raise ValueError("Private key is missing or improperly formatted.")
-
-    credentials = Credentials.from_service_account_info(service_account_info, scopes=['https://www.googleapis.com/auth/calendar'])
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info, scopes=SCOPES)
     return build('calendar', 'v3', credentials=credentials, cache_discovery=False)
 
 def add_calendar_entry(calendar_id, summary, description, start_time, end_time):
@@ -54,12 +49,12 @@ def add_calendar_entry(calendar_id, summary, description, start_time, end_time):
         'description': description,
         'start': {
             'dateTime': start_time,
-            'timeZone': 'Australia/Sydney',
+            'timeZone': 'Australia/Brisbane',  # Ensure the time zone is explicitly set to AEST
         },
         'end': {
             'dateTime': end_time,
-            'timeZone': 'Australia/Sydney',
-        },
+            'timeZone': 'Australia/Brisbane',  # Ensure the time zone is explicitly set to AEST
+        }
     }
     try:
         return service.events().insert(calendarId=calendar_id, body=event).execute()
@@ -74,30 +69,46 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         duration_minutes = req_body.get('durationMinutes')
         client_name = req_body.get('clientName')
         appointment_purpose = req_body.get('appointmentPurpose')
+        phone_number = req_body.get('phoneNumber')
+        email_address = req_body.get('emailAddress')
 
-        if not preferred_date_time or not duration_minutes or not client_name or not appointment_purpose:
+        # Validate required fields
+        if not all([preferred_date_time, duration_minutes, client_name, appointment_purpose, phone_number, email_address]):
             return func.HttpResponse(
-                json.dumps({"error": "All parameters are required: preferredDateTime, durationMinutes, clientName, appointmentPurpose"}),
+                json.dumps({"error": "All parameters are required: preferredDateTime, durationMinutes, clientName, appointmentPurpose, phoneNumber, emailAddress"}),
                 status_code=400,
                 mimetype="application/json"
             )
 
-        start_time = datetime.fromisoformat(preferred_date_time).astimezone(datetime.timezone.utc)
-        end_time = start_time + datetime.timedelta(minutes=duration_minutes)
+        # Parse the preferred date and time as AEST
+        start_time_aest = AEST.localize(datetime.fromisoformat(preferred_date_time))
+        end_time_aest = start_time_aest + timedelta(minutes=duration_minutes)
 
-        start_time_str = start_time.isoformat()
-        end_time_str = end_time.isoformat()
+        start_time_str = start_time_aest.isoformat()
+        end_time_str = end_time_aest.isoformat()
 
+        # Format the description
+        description = (
+            f"Purpose: {appointment_purpose}\n"
+            f"Client Name: {client_name}\n"
+            f"Phone: {phone_number}\n"
+            f"Email: {email_address}"
+        )
+
+        # Add the calendar entry
         event = add_calendar_entry(
             CALENDAR_ID,
             f'Appointment with {client_name}',
-            appointment_purpose,
+            description,
             start_time_str,
             end_time_str
         )
 
         return func.HttpResponse(
-            json.dumps({"result": f"Appointment scheduled with {client_name} for {appointment_purpose} on {start_time_str}", "eventId": event.get('id')}),
+            json.dumps({
+                "result": f"Appointment scheduled with {client_name} for {appointment_purpose} on {start_time_str}",
+                "eventId": event.get('id')
+            }),
             status_code=200,
             mimetype="application/json"
         )
