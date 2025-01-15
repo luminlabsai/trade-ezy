@@ -232,7 +232,7 @@ def fetch_chat_history(business_id, session_id, limit=CHAT_HISTORY_LIMIT):
         cursor = conn.cursor()
         cursor.execute(
             "SELECT role, content FROM chathistory WHERE business_id = %s AND session_id = %s "
-            "ORDER BY timestamp DESC LIMIT %s",
+            "ORDER BY timestamp ASC LIMIT %s",
             (business_id, session_id, limit)
         )
         rows = cursor.fetchall()
