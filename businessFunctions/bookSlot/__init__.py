@@ -64,6 +64,7 @@ def add_calendar_entry(calendar_id, summary, description, start_time, end_time):
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
+        # Parse the request body
         req_body = req.get_json()
         preferred_date_time = req_body.get('preferredDateTime')
         duration_minutes = req_body.get('durationMinutes')
@@ -71,6 +72,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         appointment_purpose = req_body.get('appointmentPurpose')
         phone_number = req_body.get('phoneNumber')
         email_address = req_body.get('emailAddress')
+        time_zone = req_body.get('timeZone', 'Australia/Brisbane')  # Default to AEST if not provided
 
         # Validate required fields
         if not all([preferred_date_time, duration_minutes, client_name, appointment_purpose, phone_number, email_address]):
@@ -80,12 +82,35 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 mimetype="application/json"
             )
 
-        # Parse the preferred date and time as AEST
-        start_time_aest = AEST.localize(datetime.fromisoformat(preferred_date_time))
-        end_time_aest = start_time_aest + timedelta(minutes=duration_minutes)
+        # Load the specified timezone
+        try:
+            selected_time_zone = pytz.timezone(time_zone)
+        except pytz.UnknownTimeZoneError:
+            return func.HttpResponse(
+                json.dumps({"error": f"Invalid timeZone: {time_zone}"}),
+                status_code=400,
+                mimetype="application/json"
+            )
 
-        start_time_str = start_time_aest.isoformat()
-        end_time_str = end_time_aest.isoformat()
+        # Parse the preferred date and time
+        try:
+            start_time = datetime.fromisoformat(preferred_date_time)
+            if start_time.tzinfo is None:  # Only localize if naive
+                start_time = selected_time_zone.localize(start_time)
+            else:
+                logging.info(f"Datetime already has tzinfo: {start_time.tzinfo}")
+        except ValueError:
+            return func.HttpResponse(
+                json.dumps({"error": "Invalid preferredDateTime format. Must be ISO 8601."}),
+                status_code=400,
+                mimetype="application/json"
+            )
+
+        end_time = start_time + timedelta(minutes=duration_minutes)
+
+        # Convert to ISO format for Google Calendar
+        start_time_str = start_time.isoformat()
+        end_time_str = end_time.isoformat()
 
         # Format the description
         description = (
@@ -112,6 +137,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             status_code=200,
             mimetype="application/json"
         )
+
     except Exception as e:
         logger.error(f"Error in booking slot: {e}")
         return func.HttpResponse(
