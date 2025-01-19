@@ -21,31 +21,32 @@ def json_serial(obj):
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("Processing request to get services for a business.")
 
-    # Get businessID and fields from the query parameters
-    business_id = req.route_params.get("businessID")
-    fields = req.params.get("fields")  # Expecting a comma-separated list of fields
-    service_name = req.params.get("service_name")  # Optional service_name parameter for filtering
-
-    if business_id:
-        business_id = business_id.strip()  # Remove extra spaces or newlines
-
-    if not business_id:
-        logging.warning("Missing business_id in the request.")
-        return func.HttpResponse(
-            json.dumps({"error": "Business ID is required."}),
-            status_code=400,
-            mimetype="application/json"
-        )
-
-    # Default fields to query
-    default_fields = ["name", "description", "duration_minutes", "price"]
-    allowed_fields = {"name", "description", "duration_minutes", "price"}
-
     try:
+        # Parse the request body
+        req_body = req.get_json()
+        sender_id = req_body.get("senderID")
+        business_id = req_body.get("businessID")
+        fields = req_body.get("fields")  # Expecting a list of fields
+        service_name = req_body.get("service_name")  # Optional service name for filtering
+
+        # Validate required fields
+        if not sender_id or not business_id:
+            return func.HttpResponse(
+                json.dumps({"error": "Both senderID and businessID are required."}),
+                status_code=400,
+                mimetype="application/json"
+            )
+
+        # Log the sender ID for tracking purposes
+        logging.info(f"Request from senderID: {sender_id} for businessID: {business_id}")
+
+        # Default fields to query
+        default_fields = ["service_id", "name", "description", "duration_minutes", "price"]
+        allowed_fields = {"service_id", "name", "description", "duration_minutes", "price"}
+
         # Parse and validate fields
         if fields:
-            fields = [field.strip() for field in fields.split(",")]
-            fields = [field for field in fields if field in allowed_fields]
+            fields = [field.strip() for field in fields if field.strip() in allowed_fields]
             if not fields:
                 logging.warning("No valid fields specified. Using default fields.")
                 fields = default_fields
@@ -89,30 +90,30 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         if services:
             logging.info(f"Query succeeded. Number of services found: {len(services)}")
             return func.HttpResponse(
-                json.dumps({"services": services}, default=json_serial),
+                json.dumps({"senderID": sender_id, "services": services}, default=json_serial),
                 status_code=200,
                 mimetype="application/json"
             )
         else:
-            logging.warning(f"No services found for business_id: {business_id}")
+            logging.warning(f"No services found for businessID: {business_id}")
             return func.HttpResponse(
-                json.dumps({"error": "No services found for the specified business."}),
+                json.dumps({"senderID": sender_id, "error": "No services found for the specified business."}),
                 status_code=404,
                 mimetype="application/json"
             )
 
     except psycopg2.Error as e:
-        logging.error(f"PostgreSQL error: {e}")
+        logging.error(f"PostgreSQL error for senderID {sender_id}: {e}")
         return func.HttpResponse(
-            json.dumps({"error": "An error occurred while querying the database."}),
+            json.dumps({"senderID": sender_id, "error": "An error occurred while querying the database."}),
             status_code=500,
             mimetype="application/json"
         )
 
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        logging.error(f"Unexpected error for senderID {sender_id}: {e}")
         return func.HttpResponse(
-            json.dumps({"error": "Internal Server Error"}),
+            json.dumps({"senderID": sender_id, "error": "Internal Server Error"}),
             status_code=500,
             mimetype="application/json"
         )

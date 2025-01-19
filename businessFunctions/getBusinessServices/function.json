@@ -1,18 +1,17 @@
 {
-    "bindings": [
-      {
-        "authLevel": "anonymous",
-        "type": "httpTrigger",
-        "direction": "in",
-        "name": "req",
-        "route": "getBusinessServices/{businessID}",
-        "methods": ["get"]
-      },
-      {
-        "type": "http",
-        "direction": "out",
-        "name": "$return"
-      }
-    ]
-  }
-  
+  "bindings": [
+    {
+      "authLevel": "anonymous",
+      "type": "httpTrigger",
+      "direction": "in",
+      "name": "req",
+      "route": "getBusinessServices",
+      "methods": ["post"]
+    },
+    {
+      "type": "http",
+      "direction": "out",
+      "name": "$return"
+    }
+  ]
+}

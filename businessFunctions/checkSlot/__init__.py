@@ -57,33 +57,50 @@ def is_time_slot_available(calendar_id, start_time, end_time):
 def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         req_body = req.get_json()
+        sender_id = req_body.get('senderID')
         preferred_date_time = req_body.get('preferredDateTime')
         duration_minutes = req_body.get('durationMinutes')
 
-        if not preferred_date_time or not duration_minutes:
+        # Validate required fields
+        if not sender_id or not preferred_date_time or not duration_minutes:
             return func.HttpResponse(
-                json.dumps({"error": "preferredDateTime and durationMinutes are required"}),
+                json.dumps({
+                    "error": "senderID, preferredDateTime, and durationMinutes are required."
+                }),
                 status_code=400,
                 mimetype="application/json"
             )
 
-        # Replace 'Z' with '+00:00' to handle ISO 8601 UTC format
+        # Log the sender_id for tracking purposes
+        logging.info(f"Checking slot for senderID: {sender_id}")
+
+        # Convert preferred_date_time to UTC
         start_time = datetime.fromisoformat(preferred_date_time.replace("Z", "+00:00")).astimezone(timezone.utc)
         end_time = start_time + timedelta(minutes=duration_minutes)
 
         start_time_str = start_time.isoformat()
         end_time_str = end_time.isoformat()
 
+        # Check slot availability
         is_available = is_time_slot_available(CALENDAR_ID, start_time_str, end_time_str)
+        
+        # Return response
         return func.HttpResponse(
-            json.dumps({"isAvailable": is_available}),
+            json.dumps({
+                "senderID": sender_id,
+                "isAvailable": is_available
+            }),
             status_code=200,
             mimetype="application/json"
         )
+
     except Exception as e:
-        logger.error(f"Error in checking slot availability: {e}")
+        logging.error(f"Error in checking slot availability for senderID {sender_id}: {e}")
         return func.HttpResponse(
-            json.dumps({"error": str(e)}),
+            json.dumps({
+                "senderID": sender_id,
+                "error": str(e)
+            }),
             status_code=500,
             mimetype="application/json"
         )

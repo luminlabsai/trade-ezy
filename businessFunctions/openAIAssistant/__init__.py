@@ -33,55 +33,65 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # Parse the request body
         req_body = req.get_json()
         query = req_body.get("query")
+        sender_id = req_body.get("senderID")
         business_context = req_body.get("businessContext")
-        session_id = req_body.get("sessionID") or str(uuid4())
+        business_id = business_context.get("businessID") if business_context else None
 
         # Validate inputs
         if not query:
+            logging.error("Query is missing in the request.")
             return func.HttpResponse(
                 json.dumps({"error": "Query is missing."}),
                 status_code=400,
                 mimetype="application/json"
             )
 
-        if not business_context or not business_context.get("businessID"):
+        if not sender_id:
+            logging.error("SenderID is missing in the request.")
             return func.HttpResponse(
-                json.dumps({"error": "Business context is missing or invalid."}),
+                json.dumps({"error": "senderID is required."}),
                 status_code=400,
                 mimetype="application/json"
             )
 
-        business_id = business_context["businessID"]
+        if not business_id:
+            logging.error("BusinessID is missing in the request.")
+            return func.HttpResponse(
+                json.dumps({"error": "businessID is required."}),
+                status_code=400,
+                mimetype="application/json"
+            )
 
-        # Fetch chat history
-        chat_history = fetch_chat_history(business_id, session_id)
+        # Log received inputs
+        logging.info(f"Query: {query}, SenderID: {sender_id}, BusinessID: {business_id}")
+
+        # Fetch chat history for the sender
+        chat_history = fetch_chat_history(business_id, sender_id)
         messages = [
             {"role": message["role"], "content": message["content"]}
             for message in chat_history
-            if message["role"] in {"user", "assistant", "system"}
         ]
 
-        # Add current query to messages
+        # Add the user's current query to messages
         messages.append({"role": "user", "content": query})
 
-        # Add detailed system instructions
+        # Add system instructions
         messages.insert(0, {
             "role": "system",
             "content": (
                 f"You are assisting with service and booking inquiries for a business. "
                 f"The unique ID of the business is {business_id}. "
-                f"For queries about services or bookings, use this ID to retrieve details. "
-                f"Respond as if you're aware of all prior messages in the conversation."
-                f"Do not ask the user for the businessID unless explicitly required."
-                f"For queries about booking a service, first retrieve the service details using 'getBusinessServices'. "
-                f"Then check slot availability using 'checkSlot'. If a slot is available, proceed to book it using 'bookSlot'. "
-                f"Always confirm with the user before booking."
-                f"Extract and convert date and time to ISO 8601 format (YYYY-MM-DDTHH:MM+10:00)."
+                f"1. If the user asks about services, use `getBusinessServices`. "
+                f"2. If the user asks to book a service, first use `getBusinessServices` to retrieve the service ID. "
+                f"3. Then use `checkSlot` to verify availability of the slot at the requested time. "
+                f"4. Finally, use `bookSlot` to schedule the appointment if the slot is available. "
+                f"Ensure each step is processed before moving to the next."
             )
         })
 
+
         # Store the user's query
-        store_chat_message(business_id, session_id, "user", query, "formatted")
+        store_chat_message(business_id, sender_id, "user", query, "formatted")
 
         # Call OpenAI assistant
         logging.info(f"Sending request to OpenAI API with model {LLM_MODEL}.")
@@ -100,59 +110,20 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         assistant_response = response.choices[0].message
         logging.info(f"Assistant raw response: {assistant_response}")
 
-        # Convert raw response to a JSON-serializable format
-        assistant_raw_message = {
-            "role": assistant_response.role,
-            "content": assistant_response.content,
-            "function_call": {
-                "name": assistant_response.function_call.name,
-                "arguments": assistant_response.function_call.arguments
-            } if assistant_response.function_call else None
-        }
+        # Handle intermediate response
+        if assistant_response.content:
+            logging.info(f"Sending response: {assistant_response.content}")
+            store_chat_message(business_id, sender_id, "assistant", assistant_response.content, "formatted")
+            return func.HttpResponse(assistant_response.content, status_code=200, mimetype="text/plain")
 
-        # Store the raw response in the database
-        store_chat_message(business_id, session_id, "assistant", json.dumps(assistant_raw_message), "raw")
-
-        # Check for a function call
+        # Handle function calls
         if assistant_response.function_call:
-            # Handle function call
-            formatted_response = handle_function_call(assistant_response, messages, business_id, session_id)
-            logging.info(f"Formatted response from handle_function_call: {formatted_response}")
-            #
-            if isinstance(formatted_response, func.HttpResponse):
-                try:
-                    response_body = formatted_response.get_body()
-                    logging.info(f"HttpResponse body: {response_body}")
+            return handle_function_call(assistant_response, business_id, sender_id)
 
-                    # Check if response_body is JSON or plain text
-                    try:
-                        parsed_response = json.loads(response_body)
-                        formatted_content = parsed_response.get("response", response_body.decode("utf-8"))
-                    except json.JSONDecodeError:
-                        logging.warning("Response body is plain text, not JSON.")
-                        formatted_content = response_body.decode("utf-8")
-
-                    store_chat_message(business_id, session_id, "assistant", formatted_content, "formatted")
-                    return func.HttpResponse(
-                        formatted_content,
-                        status_code=200,
-                        mimetype="text/plain"
-                    )
-                except Exception as e:
-                    logging.error(f"Error processing HttpResponse: {e}")
-                    return func.HttpResponse(
-                        json.dumps({"error": "Failed to process formatted response.", "details": str(e)}),
-                        status_code=500,
-                        mimetype="application/json"
-                    )
-
-
-
-        # Store and return the assistant's direct response
-        store_chat_message(business_id, session_id, "assistant", assistant_response.content, "formatted")
+        # Default fallback response
         return func.HttpResponse(
-            assistant_response.content,
-            status_code=200,
+            "I'm sorry, I couldn't process your request.",
+            status_code=500,
             mimetype="text/plain"
         )
 
@@ -164,260 +135,210 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json"
         )
 
-# Helper Functions
-def handle_function_call(assistant_response, messages, business_id, session_id):
-    """Handle function call responses."""
+
+def handle_function_call(assistant_response, business_id, sender_id):
     try:
+        logging.info(f"Function endpoints loaded: {function_endpoints}")
         function_call = assistant_response.function_call
         function_name = function_call.name
         arguments = json.loads(function_call.arguments)
 
-        logging.info(f"Handling function call: {function_name} with arguments: {arguments}")
+        logging.info(f"Processing function call: {function_name} with arguments: {arguments}")
 
-        endpoint = function_endpoints.get(function_name)
-        if not endpoint:
-            raise ValueError(f"No endpoint configured for function: {function_name}")
+        # Ensure the function name is valid
+        if function_name not in function_endpoints:
+            logging.error(f"Unknown function name received: {function_name}")
+            raise ValueError(f"Unknown function name: {function_name}")
+
+        # Call the function endpoint
+        endpoint_url = function_endpoints[function_name]
+        logging.info(f"Resolved endpoint for {function_name}: {endpoint_url}")
+        response = call_function_endpoint(function_name, arguments, sender_id, business_id)
 
         if function_name == "getBusinessServices":
-            fields = ",".join(arguments.get("fields", ["name", "description", "price", "duration"]))
-            endpoint_url = endpoint.format(
-                businessID=quote(arguments["businessID"]),
-                fields=quote(fields)
+            services = response.get("services", [])
+            if not services:
+                raise ValueError("No services found in the response.")
+
+            if "preferredDateTime" not in arguments:
+                formatted_services = "\n".join(
+                    f"- {service['name']} (Price: ${service.get('price', 'N/A')}, Duration: {service.get('duration_minutes', 'N/A')} minutes)"
+                    for service in services
+                )
+                follow_up_message = f"The business offers the following services:\n{formatted_services}"
+                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+
+            # Extract service details for booking/checking slot
+            service_id = services[0].get("service_id")
+            duration_minutes = services[0].get("duration_minutes")
+            service_name = services[0].get("name")
+            preferred_date_time = arguments.get("preferredDateTime")
+
+            if not all([service_id, duration_minutes, preferred_date_time, service_name]):
+                raise ValueError("Missing service_id, duration_minutes, preferred_date_time, or service_name for checkSlot.")
+
+            check_slot_arguments = {
+                "businessID": business_id,
+                "serviceID": service_id,
+                "preferredDateTime": preferred_date_time,
+                "durationMinutes": duration_minutes,
+            }
+
+            logging.info(f"Triggering checkSlot with arguments: {check_slot_arguments}")
+            check_slot_response = call_function_endpoint("checkSlot", check_slot_arguments, sender_id, business_id)
+
+            is_available = check_slot_response.get("isAvailable")
+            if not is_available:
+                follow_up_message = "The requested slot is not available."
+                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+
+            # If the user wants to check availability without booking
+            if not arguments.get("book", False):  # `book` flag indicates booking intent
+                follow_up_message = "The slot is available."
+                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+
+            # Prepare for booking
+            follow_up_message = (
+                "The slot is available! Please provide your name, phone number, and email address to proceed with booking."
             )
-            logging.info(f"Calling endpoint: {endpoint_url}")
-            response = requests.get(endpoint_url)
-            response.raise_for_status()
+            store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
 
-            result = response.json()
-            formatted_response = format_response(result, messages, function_name)
+            # Temporarily store service details in chat history for booking continuation
+            store_chat_message(business_id, sender_id, "system", json.dumps({
+                "serviceID": service_id,
+                "preferredDateTime": preferred_date_time,
+                "durationMinutes": duration_minutes,
+                "appointmentPurpose": service_name,
+            }), "raw")
+            return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
-            return func.HttpResponse(
-                json.dumps({"response": formatted_response}),
-                status_code=200,
-                mimetype="application/json"
-            )
-
-        # Handle checkSlot
         elif function_name == "checkSlot":
-            payload = prepare_check_slot_payload(arguments)
-            logging.info(f"Calling checkSlot with payload: {payload}")
-            response = requests.post(endpoint, json=payload)
-            response.raise_for_status()
+            is_available = response.get("isAvailable")
+            logging.info(f"checkSlot response: {response}")
 
-            response_data = response.json()
-            logging.info(f"checkSlot result: {response_data}")
-            store_chat_message(business_id, session_id, "assistant", json.dumps(response_data), "formatted")
-
-            # If slot is available, call bookSlot
-            if response_data.get("isAvailable"):
-                logging.info("Slot is available, preparing to call bookSlot.")
-                book_slot_payload = prepare_book_slot_payload(arguments, defaults={"durationMinutes": payload["durationMinutes"]})
-                logging.info(f"Calling bookSlot with payload: {json.dumps(book_slot_payload, indent=2)}")
-
-                book_slot_response = requests.post(function_endpoints["bookSlot"], json=book_slot_payload)
-                book_slot_response.raise_for_status()
-
-                book_slot_data = book_slot_response.json()
-                logging.info(f"bookSlot result: {book_slot_data}")
-                store_chat_message(business_id, session_id, "assistant", json.dumps(book_slot_data), "formatted")
-
-                # Format the response naturally
-                messages.append({
-                    "role": "function",
-                    "name": "bookSlot",
-                    "content": json.dumps(book_slot_data)
-                })
-                formatted_response = openai.chat.completions.create(
-                    model=LLM_MODEL,
-                    messages=messages,
-                    temperature=0.7,
-                    top_p=0.95,
-                    max_tokens=800,
-                    user=ASSISTANT_ID
+            if is_available:
+                follow_up_message = (
+                    "The slot is available! Please provide your name, phone number, and email address "
+                    "to proceed with booking."
                 )
-                logging.info(f"Raw OpenAI response: {formatted_response}")
-
-                formatted_message = formatted_response.choices[0].message.content
-                if not formatted_message.strip():
-                    raise ValueError("Formatted response from OpenAI is empty.")
-
-                logging.info(f"Formatted bookSlot response: {formatted_message}")
-                store_chat_message(business_id, session_id, "assistant", formatted_message, "formatted")
-
-                # Return the formatted response after successful booking
-                return func.HttpResponse(
-                    formatted_message,
-                    status_code=200,
-                    mimetype="text/plain"
-                )
-
-            # If the slot is not available, return the fallback response
-            logging.info("Slot is not available. Informing the assistant.")
-            return func.HttpResponse(
-                json.dumps({"response": "The requested time slot is not available."}),
-                status_code=200,
-                mimetype="application/json"
-            )
+                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+            else:
+                follow_up_message = "The requested slot is not available."
+                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
         elif function_name == "bookSlot":
-            logging.info(f"Calling bookSlot with arguments: {arguments}")
-            response = requests.post(endpoint, json=arguments)
-            response.raise_for_status()
+            # Extract booking details
+            client_name = arguments.get("clientName")
+            phone_number = arguments.get("phoneNumber")
+            email_address = arguments.get("emailAddress")
 
-            book_slot_data = response.json()
-            logging.info(f"bookSlot result: {book_slot_data}")
-            store_chat_message(business_id, session_id, "assistant", json.dumps(book_slot_data), "formatted")
+            # Validate required details
+            missing_details = []
+            if not client_name:
+                missing_details.append("name")
+            if not phone_number:
+                missing_details.append("phone number")
+            if not email_address:
+                missing_details.append("email address")
 
-            messages.append({
-                "role": "function",
-                "name": "bookSlot",
-                "content": json.dumps(book_slot_data)
-            })
+            if missing_details:
+                follow_up_message = f"Please provide your {', '.join(missing_details)} to complete the booking."
+                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
-            formatted_response = openai.chat.completions.create(
-                model=LLM_MODEL,
-                messages=messages,
-                temperature=0.7,
-                top_p=0.95,
-                max_tokens=800,
-                user=ASSISTANT_ID
-            )
-            logging.info(f"Raw OpenAI response: {formatted_response}")
+            # Retrieve temporary service details
+            chat_history = fetch_chat_history(business_id, sender_id)
+            service_details = None
+            for message in reversed(chat_history):
+                if message["role"] == "system" and "serviceID" in message["content"]:
+                    service_details = json.loads(message["content"])
+                    break
 
-            formatted_message = formatted_response.choices[0].message.content
-            if not formatted_message.strip():
-                raise ValueError("Formatted response from OpenAI is empty.")
+            if not service_details:
+                raise ValueError("Missing service details for booking.")
 
-            logging.info(f"Formatted bookSlot response: {formatted_message}")
-            # Final return
-            try:
-                # Ensure the formatted_message is a plain string
-                if not isinstance(formatted_message, str) or not formatted_message.strip():
-                    raise ValueError("Formatted message is empty or not a valid string.")
+            # Call bookSlot with all required parameters
+            book_slot_arguments = {
+                "businessID": business_id,
+                "serviceID": service_details["serviceID"],
+                "preferredDateTime": service_details["preferredDateTime"],
+                "durationMinutes": service_details["durationMinutes"],
+                "clientName": client_name,
+                "appointmentPurpose": service_details["appointmentPurpose"],
+                "phoneNumber": phone_number,
+                "emailAddress": email_address,
+            }
 
-                logging.info(f"Returning formatted response to client: {formatted_message}")
-                return func.HttpResponse(
-                    formatted_message,
-                    status_code=200,
-                    mimetype="text/plain"
-                )
-            except Exception as e:
-                logging.error(f"Error while returning the response: {e}")
-                return func.HttpResponse(
-                    json.dumps({"error": "Failed to process the final response.", "details": str(e)}),
-                    status_code=500,
-                    mimetype="application/json"
-                )
+            logging.info(f"Calling bookSlot with arguments: {book_slot_arguments}")
+            book_slot_response = call_function_endpoint("bookSlot", book_slot_arguments, sender_id, business_id)
 
+            booking_result = book_slot_response.get("result")
+            if booking_result:
+                follow_up_message = f"Booking successful! Details: {booking_result}"
+            else:
+                follow_up_message = "Booking failed. Please try again."
+
+            store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+            return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+
+        else:
+            logging.error(f"Unknown function name after processing: {function_name}")
+            raise ValueError(f"Unknown function name: {function_name}")
+
+    except Exception as e:
+        logging.error(f"Unexpected error in function call handling: {e}")
+        return func.HttpResponse(
+            json.dumps({"error": "Function call failed", "details": str(e)}),
+            status_code=500,
+            mimetype="application/json"
+        )
+
+
+def call_function_endpoint(function_name, payload, sender_id, business_id):
+    """
+    Send a request to the specified function endpoint.
+    :param function_name: Name of the function to call.
+    :param payload: Payload to send in the request.
+    :param sender_id: Sender ID for the request.
+    :param business_id: Business ID for the request.
+    :return: JSON response from the function.
+    """
+    try:
+        endpoint_url = function_endpoints.get(function_name)
+        if not endpoint_url:
+            logging.error(f"Unknown function name in call_function_endpoint: {function_name}")
+            raise ValueError(f"Unknown function name: {function_name}")
+
+        logging.info(f"Resolved endpoint for {function_name}: {endpoint_url}")
+
+        # Include required parameters in the payload
+        payload["senderID"] = sender_id
+        payload["businessID"] = business_id
+
+        logging.info(f"Calling {function_name} at {endpoint_url} with payload: {payload}")
+
+        # Send the POST request to the function endpoint
+        response = requests.post(endpoint_url, json=payload)
+        response.raise_for_status()
+
+        # Parse and return the JSON response
+        logging.info(f"Response from {function_name}: {response.json()}")
+        return response.json()
 
     except requests.RequestException as e:
-        logging.error(f"HTTP request error: {e}")
-        return func.HttpResponse(
-            json.dumps({"error": f"HTTP request failed: {e}"}),
-            status_code=500,
-            mimetype="application/json"
-        )
-    except json.JSONDecodeError as e:
-        logging.error(f"Error decoding JSON: {e}")
-        return func.HttpResponse(
-            json.dumps({"error": "Invalid JSON response."}),
-            status_code=500,
-            mimetype="application/json"
-        )
+        logging.error(f"HTTP request error for function {function_name}: {e}")
+        raise
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
-        return func.HttpResponse(
-            json.dumps({"error": "Internal Server Error", "details": str(e)}),
-            status_code=500,
-            mimetype="application/json"
-        )
-
-def format_response(result, messages, function_name):
-    """Format the function response using OpenAI."""
-    logging.info(f"Formatting function response for {function_name}. Result: {result}")
-
-    try:
-        # Add the function response as a message
-        messages.append({"role": "function", "name": function_name, "content": json.dumps(result)})
-
-        # Call OpenAI to format the response naturally
-        follow_up_response = openai.chat.completions.create(
-            model=LLM_MODEL,
-            messages=messages,
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=800,
-            user=ASSISTANT_ID
-        )
-        logging.info(f"Raw OpenAI response: {formatted_response}")
-
-        formatted_message = follow_up_response.choices[0].message.content
-        logging.info(f"Formatted response: {formatted_message}")
-        return formatted_message
-
-    except Exception as e:
-        logging.error(f"Error formatting function response: {e}")
-        return "I'm sorry, there was an error formatting the response."
+        logging.error(f"Unexpected error calling {function_name}: {e}")
+        raise
 
 
-def prepare_check_slot_payload(arguments):
-    if "serviceID" in arguments:
-        # Fetch service duration if serviceID is provided
-        service_id = arguments["serviceID"]
-        # Fetch service details logic here...
-        arguments["durationMinutes"] = 45  # Example duration; replace with fetched data
-
-    # Validate arguments
-    if not arguments.get("preferredDateTime") or not arguments.get("durationMinutes"):
-        raise ValueError("Invalid arguments for checkSlot. 'preferredDateTime' and 'durationMinutes' are required.")
-    return {
-        "preferredDateTime": arguments["preferredDateTime"],
-        "durationMinutes": arguments["durationMinutes"]
-    }
-
-def prepare_book_slot_payload(arguments, defaults=None):
-    """
-    Prepare and validate the payload for the bookSlot function.
-    :param arguments: The raw arguments from the assistant's function call.
-    :param defaults: Default values for optional fields.
-    :return: A dictionary payload ready for the bookSlot API.
-    :raises ValueError: If required fields are missing.
-    """
-    if defaults is None:
-        defaults = {}
-
-    # Validate required arguments
-    required_fields = ["businessID", "serviceID", "preferredDateTime"]
-    for field in required_fields:
-        if not arguments.get(field):
-            raise ValueError(f"Missing required parameter: {field}")
-
-    # Construct payload with optional defaults
-    payload = {
-        "businessID": arguments["businessID"],
-        "serviceID": arguments["serviceID"],
-        "preferredDateTime": arguments["preferredDateTime"],
-        "clientName": arguments.get("clientName", defaults.get("clientName", "Unknown Client")),
-        "appointmentPurpose": arguments.get("appointmentPurpose", defaults.get("appointmentPurpose", "General Inquiry")),
-        "phoneNumber": arguments.get("phoneNumber", defaults.get("phoneNumber", "0000000000")),
-        "emailAddress": arguments.get("emailAddress", defaults.get("emailAddress", "noemail@example.com")),
-        "durationMinutes": arguments.get("durationMinutes", defaults.get("durationMinutes"))
-    }
-
-    # Ensure durationMinutes is present
-    if not payload["durationMinutes"]:
-        raise ValueError("Missing required parameter: durationMinutes")
-
-    return payload
-
-def fetch_chat_history(business_id, session_id, limit=CHAT_HISTORY_LIMIT):
-    """
-    Fetch chat history for a given business ID and session ID.
-    :param business_id: The ID of the business.
-    :param session_id: The session ID for the conversation.
-    :param limit: The maximum number of messages to fetch.
-    :return: A list of dictionaries representing the chat history.
-    """
+def fetch_chat_history(business_id, sender_id, limit=CHAT_HISTORY_LIMIT):
     try:
         conn = psycopg2.connect(
             host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
@@ -426,61 +347,34 @@ def fetch_chat_history(business_id, session_id, limit=CHAT_HISTORY_LIMIT):
         cursor.execute(
             """
             SELECT role, content FROM chathistory
-            WHERE business_id = %s AND session_id = %s
+            WHERE business_id = %s AND sender_id = %s
             ORDER BY timestamp ASC
             LIMIT %s
             """,
-            (business_id, session_id, limit)
+            (business_id, sender_id, limit)
         )
         rows = cursor.fetchall()
-
-        chat_history = []
-        for row in rows:
-            # Ensure content is returned as a string
-            content = row[1]
-            if isinstance(content, dict):
-                content = json.dumps(content)  # Serialize to string if it's a dictionary
-            chat_history.append({"role": row[0], "content": content})
-
-        return chat_history
-    except psycopg2.Error as e:
+        return [{"role": row[0], "content": row[1]} for row in rows]
+    except Exception as e:
         logging.error(f"Error fetching chat history: {e}")
         return []
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
 
 
-def store_chat_message(business_id, session_id, role, content, message_type="formatted"):
-    """
-    Store a chat message in the database.
-    :param business_id: The ID of the business.
-    :param session_id: The session ID for the conversation.
-    :param role: The role of the message (e.g., 'user', 'assistant').
-    :param content: The message content (must be serialized to string).
-    :param message_type: 'raw' or 'formatted' for assistant messages.
-    """
+def store_chat_message(business_id, sender_id, role, content, message_type="formatted"):
     try:
-        # Ensure content is serialized if it's a dictionary
-        if isinstance(content, dict):
-            content = json.dumps(content)
-
         conn = psycopg2.connect(
             host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
         )
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO chathistory (business_id, session_id, role, content, message_type)
+            INSERT INTO chathistory (business_id, sender_id, role, content, message_type)
             VALUES (%s, %s, %s, %s, %s)
             """,
-            (business_id, session_id, role, content, message_type)
+            (business_id, sender_id, role, content, message_type)
         )
         conn.commit()
-        logging.info(f"Stored message: Role={role}, Type={message_type}, Content={content}")
-    except (psycopg2.Error, ValueError) as e:
+    except Exception as e:
         logging.error(f"Error storing chat message: {e}")
     finally:
         if cursor:

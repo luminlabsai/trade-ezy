@@ -66,6 +66,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Parse the request body
         req_body = req.get_json()
+        sender_id = req_body.get('senderID')
         preferred_date_time = req_body.get('preferredDateTime')
         duration_minutes = req_body.get('durationMinutes')
         client_name = req_body.get('clientName')
@@ -75,28 +76,23 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         time_zone = req_body.get('timeZone', 'Australia/Brisbane')  # Default to AEST if not provided
 
         # Validate required fields
-        if not all([preferred_date_time, duration_minutes, client_name, appointment_purpose, phone_number, email_address]):
+        if not all([sender_id, preferred_date_time, duration_minutes, client_name, appointment_purpose, phone_number, email_address]):
             return func.HttpResponse(
-                json.dumps({"error": "All parameters are required: preferredDateTime, durationMinutes, clientName, appointmentPurpose, phoneNumber, emailAddress"}),
+                json.dumps({
+                    "error": "All parameters are required: senderID, preferredDateTime, durationMinutes, clientName, appointmentPurpose, phoneNumber, emailAddress."
+                }),
                 status_code=400,
                 mimetype="application/json"
             )
 
-        # Load the specified timezone
-        try:
-            selected_time_zone = pytz.timezone(time_zone)
-        except pytz.UnknownTimeZoneError:
-            return func.HttpResponse(
-                json.dumps({"error": f"Invalid timeZone: {time_zone}"}),
-                status_code=400,
-                mimetype="application/json"
-            )
+        # Log the sender_id for tracking purposes
+        logging.info(f"Booking slot for senderID: {sender_id}")
 
         # Parse the preferred date and time
         try:
             start_time = datetime.fromisoformat(preferred_date_time)
             if start_time.tzinfo is None:  # Only localize if naive
-                start_time = selected_time_zone.localize(start_time)
+                start_time = pytz.timezone(time_zone).localize(start_time)
             else:
                 logging.info(f"Datetime already has tzinfo: {start_time.tzinfo}")
         except ValueError:
@@ -129,8 +125,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             end_time_str
         )
 
+        # Return success response
         return func.HttpResponse(
             json.dumps({
+                "senderID": sender_id,
                 "result": f"Appointment scheduled with {client_name} for {appointment_purpose} on {start_time_str}",
                 "eventId": event.get('id')
             }),
@@ -139,9 +137,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     except Exception as e:
-        logger.error(f"Error in booking slot: {e}")
+        logging.error(f"Error in booking slot for senderID {sender_id}: {e}")
         return func.HttpResponse(
-            json.dumps({"error": str(e)}),
+            json.dumps({
+                "senderID": sender_id,
+                "error": str(e)
+            }),
             status_code=500,
             mimetype="application/json"
         )
