@@ -9,6 +9,8 @@ from uuid import uuid4
 from urllib.parse import quote
 from function_descriptions import function_descriptions
 from function_endpoints import function_endpoints
+from user_manager import get_or_create_user, update_user_details
+import re
 
 # Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "MISSING_KEY")
@@ -65,6 +67,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # Log received inputs
         logging.info(f"Query: {query}, SenderID: {sender_id}, BusinessID: {business_id}")
 
+        # Step 1: Extract user details from the query
+        user_details = extract_user_details(query)
+        if user_details:
+            logging.info(f"Extracted user details: {user_details}")
+            update_user_details(sender_id, user_details)  # Update user details in the database
+
         # Fetch chat history for the sender
         chat_history = fetch_chat_history(business_id, sender_id)
         messages = [
@@ -89,7 +97,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             )
         })
 
-
         # Store the user's query
         store_chat_message(business_id, sender_id, "user", query, "formatted")
 
@@ -110,15 +117,35 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         assistant_response = response.choices[0].message
         logging.info(f"Assistant raw response: {assistant_response}")
 
-        # Handle intermediate response
+        # Step 2: Process assistant's content
+        user_response = None
         if assistant_response.content:
             logging.info(f"Sending response: {assistant_response.content}")
             store_chat_message(business_id, sender_id, "assistant", assistant_response.content, "formatted")
-            return func.HttpResponse(assistant_response.content, status_code=200, mimetype="text/plain")
+            user_response = func.HttpResponse(assistant_response.content, status_code=200, mimetype="text/plain")
 
-        # Handle function calls
+        # Step 3: Process assistant's function call
+        function_response = None
         if assistant_response.function_call:
-            return handle_function_call(assistant_response, business_id, sender_id)
+            function_response = handle_function_call(assistant_response, business_id, sender_id)
+
+        # Step 4: Combine responses if both are present
+        if user_response and function_response:
+            logging.info("Returning combined response for content and function call.")
+            return func.HttpResponse(
+                json.dumps({
+                    "content": assistant_response.content,
+                    "function_response": json.loads(function_response.get_body().decode())
+                }),
+                status_code=200,
+                mimetype="application/json"
+            )
+
+        # Step 5: Return individual response
+        if user_response:
+            return user_response
+        if function_response:
+            return function_response
 
         # Default fallback response
         return func.HttpResponse(
@@ -136,6 +163,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
 
+
 def handle_function_call(assistant_response, business_id, sender_id):
     try:
         function_call = assistant_response.function_call
@@ -144,14 +172,23 @@ def handle_function_call(assistant_response, business_id, sender_id):
 
         logging.info(f"Handling function call: {function_name} with arguments: {arguments}")
 
+        # Ensure the user exists before proceeding
+        user_info = get_or_create_user(sender_id)
+
+        # Update user details if available in arguments
+        if "clientName" in arguments or "phoneNumber" in arguments or "emailAddress" in arguments:
+            logging.info(f"Updating user details with arguments: {arguments}")
+            update_user_details(sender_id, arguments)
+
         # Get the appropriate endpoint
         endpoint = function_endpoints.get(function_name)
         if not endpoint:
             raise ValueError(f"No endpoint configured for function: {function_name}")
 
-        # getBusinessServices
+        # Handle specific function calls
         if function_name == "getBusinessServices":
             logging.info(f"Calling {function_name} at {endpoint} with arguments: {arguments}")
+            
             response = requests.post(
                 endpoint,
                 json={"senderID": sender_id, "businessID": business_id, **arguments}
@@ -160,30 +197,30 @@ def handle_function_call(assistant_response, business_id, sender_id):
             result = response.json()
             logging.info(f"Response from {function_name}: {result}")
 
-            # Process and store the result
+            # Process the result
             services = result.get("services", [])
             if not services:
                 follow_up_message = "No services found. Please try again with a different query."
                 store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
                 return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
-            # Format all services for display
-            formatted_services = "\n".join(
-                f"- {service.get('name', 'Unknown service')} "
-                f"(Price: ${service.get('price', 'N/A')}, "
-                f"Duration: {service.get('duration_minutes', 'N/A')} minutes)"
-                for service in services
-            )
+            # Handle single or multiple services
+            if len(services) == 1:
+                selected_service = services[0]
+                logging.info(f"Storing selected service context: {selected_service}")
+                store_chat_message(business_id, sender_id, "system", json.dumps({"service": selected_service}), "raw")
+                follow_up_message = (
+                    f"The service '{selected_service['name']}' is priced at "
+                    f"${selected_service['price']:.2f} for {selected_service['duration_minutes']} minutes. "
+                    "Would you like to book this service?"
+                )
+            else:
+                follow_up_message = (
+                    "Multiple services matched your query. Please specify:\n" +
+                    "\n".join(f"- {service['name']} (${service['price']})" for service in services)
+                )
 
-            follow_up_message = (
-                f"The business offers the following services:\n{formatted_services}\n"
-                "Please specify a service and the preferred date and time to check availability."
-            )
-            
-            # Store all services in a system message
-            store_chat_message(business_id, sender_id, "system", json.dumps({"services": services}), "raw")
             store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-
             return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
 
@@ -199,58 +236,101 @@ def handle_function_call(assistant_response, business_id, sender_id):
 
             is_available = result.get("isAvailable")
             if is_available:
-                # Store slot availability in a system message
-                store_chat_message(business_id, sender_id, "system", json.dumps({
-                    **arguments,
-                    "isAvailable": True,
-                }), "raw")
+                logging.info(f"Slot is available for arguments: {arguments}")
 
-                follow_up_message = (
-                    "The slot is available! Please provide your name, phone number, and email address "
-                    "to proceed with booking."
-                )
-                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+                # Fetch user details to check if booking can proceed automatically
+                client_name = user_info.get("name")
+                phone_number = user_info.get("phone_number")
+                email_address = user_info.get("email")
+
+                # Ensure all booking details are present
+                if client_name and phone_number and email_address:
+                    # Automatically transition to bookSlot
+                    book_slot_payload = {
+                        **arguments,
+                        "clientName": client_name,
+                        "phoneNumber": phone_number,
+                        "emailAddress": email_address,
+                        "businessID": business_id,
+                        "senderID": sender_id,
+                    }
+                    logging.info(f"Automatically transitioning to bookSlot with payload: {book_slot_payload}")
+                    return call_function_endpoint("bookSlot", book_slot_payload, sender_id, business_id)
+                else:
+                    # Prompt for missing details
+                    missing_details = []
+                    if not client_name:
+                        missing_details.append("name")
+                    if not phone_number:
+                        missing_details.append("phone number")
+                    if not email_address:
+                        missing_details.append("email address")
+
+                    follow_up_message = (
+                        f"The slot is available! Please provide your {', '.join(missing_details)} "
+                        f"to proceed with booking."
+                    )
+                    store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+                    return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
             else:
                 follow_up_message = "The requested slot is not available. Please try a different time."
                 store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
                 return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
+        # bookSlot
         elif function_name == "bookSlot":
-            # Validate and construct the payload for bookSlot
-            phone_number = arguments.get("phoneNumber")
-            email_address = arguments.get("emailAddress")
-            appointment_purpose = arguments.get("appointmentPurpose")
-            if not all([phone_number, email_address, appointment_purpose]):
-                logging.warning("Missing booking details. Requesting more information.")
-                missing = [
-                    field for field in ["phoneNumber", "emailAddress", "appointmentPurpose"]
-                    if not arguments.get(field)
-                ]
-                follow_up_message = f"Please provide your {', '.join(missing)} to proceed with booking."
+            logging.info(f"Fetching user details to complete booking.")
+            user_info = get_or_create_user(sender_id)
+            logging.info(f"User found: {user_info}")
+
+            # Extract user and assistant-provided details
+            client_name = arguments.get("clientName") or user_info.get("name")
+            phone_number = arguments.get("phoneNumber") or user_info.get("phone_number")
+            email_address = arguments.get("emailAddress") or user_info.get("email")
+            service = arguments.get("service")
+
+            # Retrieve service context from chat history if not provided
+            if not service:
+                chat_history = fetch_chat_history(business_id, sender_id)
+                for message in reversed(chat_history):
+                    if message["role"] == "system" and "services" in message["content"]:
+                        try:
+                            services_context = json.loads(message["content"])
+                            service_context = services_context.get("services", [])[0]  # Assume the first service
+                            if service_context:
+                                service = service_context.get("name")
+                                logging.info(f"Using service from chat context: {service}")
+                                break
+                        except json.JSONDecodeError as e:
+                            logging.error(f"Failed to parse system message content: {e}")
+
+            # Identify missing details
+            missing_details = []
+            if not client_name:
+                missing_details.append("name")
+            if not phone_number:
+                missing_details.append("phone number")
+            if not email_address:
+                missing_details.append("email address")
+            if not service:
+                missing_details.append("service")
+
+            if missing_details:
+                logging.warning(f"Missing booking details: {missing_details}. Requesting more information.")
+                follow_up_message = f"Please provide your {', '.join(missing_details)} to proceed with the booking."
                 store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
                 return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
-            # Retrieve slot details from chat history
-            chat_history = fetch_chat_history(business_id, sender_id)
-            slot_details = None
-            for message in reversed(chat_history):
-                if message["role"] == "system" and "serviceID" in message["content"]:
-                    slot_details = json.loads(message["content"])
-                    break
-
-            if not slot_details:
-                raise ValueError("Missing slot details for booking.")
-
-            # Combine details and call bookSlot
+            # Prepare the booking payload
             book_slot_payload = {
-                **slot_details,
-                "clientName": arguments.get("clientName"),
+                "clientName": client_name,
                 "phoneNumber": phone_number,
                 "emailAddress": email_address,
-                "appointmentPurpose": slot_details["serviceName"],
+                "service": service,  # Include service name
                 "businessID": business_id,
                 "senderID": sender_id,
+                "preferredDateTime": arguments.get("preferredDateTime"),
+                "durationMinutes": arguments.get("durationMinutes"),
             }
 
             logging.info(f"Calling {function_name} at {endpoint} with payload: {book_slot_payload}")
@@ -268,6 +348,7 @@ def handle_function_call(assistant_response, business_id, sender_id):
             )
             store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
             return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+
 
         else:
             raise ValueError(f"Unsupported function name: {function_name}")
@@ -290,42 +371,70 @@ def handle_function_call(assistant_response, business_id, sender_id):
 
 
 def call_function_endpoint(function_name, payload, sender_id, business_id):
-    """
-    Send a request to the specified function endpoint.
-    :param function_name: Name of the function to call.
-    :param payload: Payload to send in the request.
-    :param sender_id: Sender ID for the request.
-    :param business_id: Business ID for the request.
-    :return: JSON response from the function.
-    """
     try:
         endpoint_url = function_endpoints.get(function_name)
         if not endpoint_url:
-            logging.error(f"Unknown function name in call_function_endpoint: {function_name}")
+            logging.error(f"Unknown function name: {function_name}")
             raise ValueError(f"Unknown function name: {function_name}")
 
-        logging.info(f"Resolved endpoint for {function_name}: {endpoint_url}")
-
-        # Include required parameters in the payload
-        payload["senderID"] = sender_id
-        payload["businessID"] = business_id
-
         logging.info(f"Calling {function_name} at {endpoint_url} with payload: {payload}")
-
-        # Send the POST request to the function endpoint
         response = requests.post(endpoint_url, json=payload)
         response.raise_for_status()
 
-        # Parse and return the JSON response
-        logging.info(f"Response from {function_name}: {response.json()}")
-        return response.json()
+        result = response.json()
+        logging.info(f"Response from {function_name}: {result}")
+
+        # Handle response for bookSlot if necessary
+        if function_name == "bookSlot":
+            booking_result = result.get("result")
+            follow_up_message = (
+                f"Booking successful! Details: {booking_result}"
+                if booking_result
+                else "Booking failed. Please try again."
+            )
+            store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+            return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+
+        return result
 
     except requests.RequestException as e:
-        logging.error(f"HTTP request error for function {function_name}: {e}")
+        logging.error(f"HTTP request error for {function_name}: {e}")
         raise
     except Exception as e:
-        logging.error(f"Unexpected error calling {function_name}: {e}")
+        logging.error(f"Unexpected error in {function_name}: {e}")
         raise
+
+
+def extract_user_details(query):
+    """
+    Extract user details (name, email, phone number) from the user's query.
+
+    Args:
+        query (str): The user's input query.
+
+    Returns:
+        dict: A dictionary containing extracted user details.
+    """
+    details = {}
+
+    # Match patterns for email
+    email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", query)
+    if email_match:
+        details["emailAddress"] = email_match.group(0).strip()
+
+    # Match patterns for phone numbers (simplified for example)
+    phone_match = re.search(r"(?:\+61|0)[4-5]\d{8}", query)
+    if phone_match:
+        details["phoneNumber"] = phone_match.group(0).strip()
+
+    # Match for name (assume starts with "my name is")
+    name_match = re.search(r"(?i)my name is ([a-zA-Z ]+)", query)
+    if name_match:
+        details["clientName"] = name_match.group(1).strip()
+
+    return details
+
+
 
 
 def fetch_chat_history(business_id, sender_id, limit=CHAT_HISTORY_LIMIT):

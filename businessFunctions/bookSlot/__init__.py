@@ -70,16 +70,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         preferred_date_time = req_body.get('preferredDateTime')
         duration_minutes = req_body.get('durationMinutes')
         client_name = req_body.get('clientName')
-        appointment_purpose = req_body.get('appointmentPurpose')
+        service = req_body.get('service')  # Updated from appointmentPurpose to service
         phone_number = req_body.get('phoneNumber')
         email_address = req_body.get('emailAddress')
         time_zone = req_body.get('timeZone', 'Australia/Brisbane')  # Default to AEST if not provided
 
         # Validate required fields
-        if not all([sender_id, preferred_date_time, duration_minutes, client_name, appointment_purpose, phone_number, email_address]):
+        if not all([sender_id, preferred_date_time, duration_minutes, client_name, service, phone_number, email_address]):
             return func.HttpResponse(
                 json.dumps({
-                    "error": "All parameters are required: senderID, preferredDateTime, durationMinutes, clientName, appointmentPurpose, phoneNumber, emailAddress."
+                    "error": "All parameters are required: senderID, preferredDateTime, durationMinutes, clientName, service, phoneNumber, emailAddress."
                 }),
                 status_code=400,
                 mimetype="application/json"
@@ -110,7 +110,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         # Format the description
         description = (
-            f"Purpose: {appointment_purpose}\n"
+            f"Service: {service}\n"
             f"Client Name: {client_name}\n"
             f"Phone: {phone_number}\n"
             f"Email: {email_address}"
@@ -129,7 +129,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(
             json.dumps({
                 "senderID": sender_id,
-                "result": f"Appointment scheduled with {client_name} for {appointment_purpose} on {start_time_str}",
+                "result": f"Appointment scheduled with {client_name} for {service} on {start_time_str}",
                 "eventId": event.get('id')
             }),
             status_code=200,
