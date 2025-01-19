@@ -138,88 +138,73 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
 def handle_function_call(assistant_response, business_id, sender_id):
     try:
-        logging.info(f"Function endpoints loaded: {function_endpoints}")
         function_call = assistant_response.function_call
         function_name = function_call.name
         arguments = json.loads(function_call.arguments)
 
-        logging.info(f"Processing function call: {function_name} with arguments: {arguments}")
+        logging.info(f"Handling function call: {function_name} with arguments: {arguments}")
 
-        # Ensure the function name is valid
-        if function_name not in function_endpoints:
-            logging.error(f"Unknown function name received: {function_name}")
-            raise ValueError(f"Unknown function name: {function_name}")
+        # Get the appropriate endpoint
+        endpoint = function_endpoints.get(function_name)
+        if not endpoint:
+            raise ValueError(f"No endpoint configured for function: {function_name}")
 
-        # Call the function endpoint
-        endpoint_url = function_endpoints[function_name]
-        logging.info(f"Resolved endpoint for {function_name}: {endpoint_url}")
-        response = call_function_endpoint(function_name, arguments, sender_id, business_id)
-
+        # getBusinessServices
         if function_name == "getBusinessServices":
-            services = response.get("services", [])
-            if not services:
-                raise ValueError("No services found in the response.")
-
-            if "preferredDateTime" not in arguments:
-                formatted_services = "\n".join(
-                    f"- {service['name']} (Price: ${service.get('price', 'N/A')}, Duration: {service.get('duration_minutes', 'N/A')} minutes)"
-                    for service in services
-                )
-                follow_up_message = f"The business offers the following services:\n{formatted_services}"
-                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
-
-            # Extract service details for booking/checking slot
-            service_id = services[0].get("service_id")
-            duration_minutes = services[0].get("duration_minutes")
-            service_name = services[0].get("name")
-            preferred_date_time = arguments.get("preferredDateTime")
-
-            if not all([service_id, duration_minutes, preferred_date_time, service_name]):
-                raise ValueError("Missing service_id, duration_minutes, preferred_date_time, or service_name for checkSlot.")
-
-            check_slot_arguments = {
-                "businessID": business_id,
-                "serviceID": service_id,
-                "preferredDateTime": preferred_date_time,
-                "durationMinutes": duration_minutes,
-            }
-
-            logging.info(f"Triggering checkSlot with arguments: {check_slot_arguments}")
-            check_slot_response = call_function_endpoint("checkSlot", check_slot_arguments, sender_id, business_id)
-
-            is_available = check_slot_response.get("isAvailable")
-            if not is_available:
-                follow_up_message = "The requested slot is not available."
-                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
-
-            # If the user wants to check availability without booking
-            if not arguments.get("book", False):  # `book` flag indicates booking intent
-                follow_up_message = "The slot is available."
-                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
-
-            # Prepare for booking
-            follow_up_message = (
-                "The slot is available! Please provide your name, phone number, and email address to proceed with booking."
+            logging.info(f"Calling {function_name} at {endpoint} with arguments: {arguments}")
+            response = requests.post(
+                endpoint,
+                json={"senderID": sender_id, "businessID": business_id, **arguments}
             )
+            response.raise_for_status()
+            result = response.json()
+            logging.info(f"Response from {function_name}: {result}")
+
+            # Process and store the result
+            services = result.get("services", [])
+            if not services:
+                follow_up_message = "No services found. Please try again with a different query."
+                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+
+            # Format all services for display
+            formatted_services = "\n".join(
+                f"- {service.get('name', 'Unknown service')} "
+                f"(Price: ${service.get('price', 'N/A')}, "
+                f"Duration: {service.get('duration_minutes', 'N/A')} minutes)"
+                for service in services
+            )
+
+            follow_up_message = (
+                f"The business offers the following services:\n{formatted_services}\n"
+                "Please specify a service and the preferred date and time to check availability."
+            )
+            
+            # Store all services in a system message
+            store_chat_message(business_id, sender_id, "system", json.dumps({"services": services}), "raw")
             store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
 
-            # Temporarily store service details in chat history for booking continuation
-            store_chat_message(business_id, sender_id, "system", json.dumps({
-                "serviceID": service_id,
-                "preferredDateTime": preferred_date_time,
-                "durationMinutes": duration_minutes,
-                "appointmentPurpose": service_name,
-            }), "raw")
             return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
-        elif function_name == "checkSlot":
-            is_available = response.get("isAvailable")
-            logging.info(f"checkSlot response: {response}")
 
+        elif function_name == "checkSlot":
+            logging.info(f"Calling {function_name} at {endpoint} with arguments: {arguments}")
+            response = requests.post(
+                endpoint,
+                json={"senderID": sender_id, **arguments}
+            )
+            response.raise_for_status()
+            result = response.json()
+            logging.info(f"Response from {function_name}: {result}")
+
+            is_available = result.get("isAvailable")
             if is_available:
+                # Store slot availability in a system message
+                store_chat_message(business_id, sender_id, "system", json.dumps({
+                    **arguments,
+                    "isAvailable": True,
+                }), "raw")
+
                 follow_up_message = (
                     "The slot is available! Please provide your name, phone number, and email address "
                     "to proceed with booking."
@@ -227,76 +212,81 @@ def handle_function_call(assistant_response, business_id, sender_id):
                 store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
                 return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
             else:
-                follow_up_message = "The requested slot is not available."
+                follow_up_message = "The requested slot is not available. Please try a different time."
                 store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
                 return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
         elif function_name == "bookSlot":
-            # Extract booking details
-            client_name = arguments.get("clientName")
+            # Validate and construct the payload for bookSlot
             phone_number = arguments.get("phoneNumber")
             email_address = arguments.get("emailAddress")
-
-            # Validate required details
-            missing_details = []
-            if not client_name:
-                missing_details.append("name")
-            if not phone_number:
-                missing_details.append("phone number")
-            if not email_address:
-                missing_details.append("email address")
-
-            if missing_details:
-                follow_up_message = f"Please provide your {', '.join(missing_details)} to complete the booking."
+            appointment_purpose = arguments.get("appointmentPurpose")
+            if not all([phone_number, email_address, appointment_purpose]):
+                logging.warning("Missing booking details. Requesting more information.")
+                missing = [
+                    field for field in ["phoneNumber", "emailAddress", "appointmentPurpose"]
+                    if not arguments.get(field)
+                ]
+                follow_up_message = f"Please provide your {', '.join(missing)} to proceed with booking."
                 store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
                 return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
-            # Retrieve temporary service details
+            # Retrieve slot details from chat history
             chat_history = fetch_chat_history(business_id, sender_id)
-            service_details = None
+            slot_details = None
             for message in reversed(chat_history):
                 if message["role"] == "system" and "serviceID" in message["content"]:
-                    service_details = json.loads(message["content"])
+                    slot_details = json.loads(message["content"])
                     break
 
-            if not service_details:
-                raise ValueError("Missing service details for booking.")
+            if not slot_details:
+                raise ValueError("Missing slot details for booking.")
 
-            # Call bookSlot with all required parameters
-            book_slot_arguments = {
-                "businessID": business_id,
-                "serviceID": service_details["serviceID"],
-                "preferredDateTime": service_details["preferredDateTime"],
-                "durationMinutes": service_details["durationMinutes"],
-                "clientName": client_name,
-                "appointmentPurpose": service_details["appointmentPurpose"],
+            # Combine details and call bookSlot
+            book_slot_payload = {
+                **slot_details,
+                "clientName": arguments.get("clientName"),
                 "phoneNumber": phone_number,
                 "emailAddress": email_address,
+                "appointmentPurpose": slot_details["serviceName"],
+                "businessID": business_id,
+                "senderID": sender_id,
             }
 
-            logging.info(f"Calling bookSlot with arguments: {book_slot_arguments}")
-            book_slot_response = call_function_endpoint("bookSlot", book_slot_arguments, sender_id, business_id)
+            logging.info(f"Calling {function_name} at {endpoint} with payload: {book_slot_payload}")
+            response = requests.post(endpoint, json=book_slot_payload)
+            response.raise_for_status()
+            result = response.json()
+            logging.info(f"Response from {function_name}: {result}")
 
-            booking_result = book_slot_response.get("result")
-            if booking_result:
-                follow_up_message = f"Booking successful! Details: {booking_result}"
-            else:
-                follow_up_message = "Booking failed. Please try again."
-
+            # Process booking result
+            booking_result = result.get("result")
+            follow_up_message = (
+                f"Booking successful! Details: {booking_result}"
+                if booking_result
+                else "Booking failed. Please try again."
+            )
             store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
             return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
         else:
-            logging.error(f"Unknown function name after processing: {function_name}")
-            raise ValueError(f"Unknown function name: {function_name}")
+            raise ValueError(f"Unsupported function name: {function_name}")
 
+    except requests.exceptions.RequestException as e:
+        logging.error(f"HTTP error for {function_name}: {e}")
+        return func.HttpResponse(
+            json.dumps({"error": f"HTTP request to {function_name} failed", "details": str(e)}),
+            status_code=500,
+            mimetype="application/json"
+        )
     except Exception as e:
-        logging.error(f"Unexpected error in function call handling: {e}")
+        logging.error(f"Error handling function call: {e}")
         return func.HttpResponse(
             json.dumps({"error": "Function call failed", "details": str(e)}),
             status_code=500,
             mimetype="application/json"
         )
+
 
 
 def call_function_endpoint(function_name, payload, sender_id, business_id):
