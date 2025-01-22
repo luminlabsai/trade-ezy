@@ -3,7 +3,7 @@ function_descriptions = [
         "name": "getBusinessServices",
         "description": (
             "Retrieve details about the services a business offers. Use this to list or search for services "
-            "offered by the business before checking availability or booking."
+            "offered by the business. Descriptions are excluded by default unless explicitly requested."
         ),
         "parameters": {
             "type": "object",
@@ -11,11 +11,16 @@ function_descriptions = [
                 "fields": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Fields to retrieve (e.g., name, price). Defaults to all fields."
+                    "description": (
+                        "Fields to retrieve (e.g., name, price). Defaults to excluding descriptions. "
+                        "Include 'description' in the fields to fetch service descriptions."
+                    )
                 },
                 "service_name": {
                     "type": "string",
-                    "description": "Optional service name to filter results. Use this to find a specific service."
+                    "description": (
+                        "Optional service name to filter results. Use this to find a specific service by name."
+                    )
                 }
             },
             "required": []
@@ -41,7 +46,8 @@ function_descriptions = [
         "name": "bookSlot",
         "description": (
             "Book a slot for a specific service on a specific date and time. Requires the slot to be available. "
-            "Check availability using checkSlot before calling this function."
+            "Check availability using checkSlot before calling this function. Ensure all client details are collected "
+            "before making the booking."
         ),
         "parameters": {
             "type": "object",

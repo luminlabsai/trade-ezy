@@ -6,23 +6,22 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import azure.functions as func
 import os
-import pytz  # For time zone handling
+import pytz
 
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# Constants
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 CALENDAR_ID = 'luminlabsdemo@gmail.com'
 
-# Define AEST time zone (UTC+10, no daylight saving)
+# Define AEST time zone
 AEST = pytz.timezone('Australia/Brisbane')
 
 def get_calendar_service():
-    # Retrieve the private key directly from the environment
+    """Initialize Google Calendar API service."""
     private_key_raw = os.getenv("GOOGLE_PRIVATE_KEY", "")
-    
-    # Replace literal `\n` with actual newlines
     private_key_processed = private_key_raw.replace("\\n", "\n").strip()
 
     service_account_info = {
@@ -43,17 +42,18 @@ def get_calendar_service():
     return build('calendar', 'v3', credentials=credentials, cache_discovery=False)
 
 def add_calendar_entry(calendar_id, summary, description, start_time, end_time):
+    """Add an event to Google Calendar."""
     service = get_calendar_service()
     event = {
         'summary': summary,
         'description': description,
         'start': {
             'dateTime': start_time,
-            'timeZone': 'Australia/Brisbane',  # Ensure the time zone is explicitly set to AEST
+            'timeZone': 'Australia/Brisbane',
         },
         'end': {
             'dateTime': end_time,
-            'timeZone': 'Australia/Brisbane',  # Ensure the time zone is explicitly set to AEST
+            'timeZone': 'Australia/Brisbane',
         }
     }
     try:
@@ -63,19 +63,19 @@ def add_calendar_entry(calendar_id, summary, description, start_time, end_time):
         raise e
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
+    """Handle slot booking requests."""
     try:
-        # Parse the request body
+        # Parse and validate request
         req_body = req.get_json()
         sender_id = req_body.get('senderID')
         preferred_date_time = req_body.get('preferredDateTime')
         duration_minutes = req_body.get('durationMinutes')
         client_name = req_body.get('clientName')
-        service = req_body.get('service')  # Updated from appointmentPurpose to service
+        service = req_body.get('service')  # Updated field name
         phone_number = req_body.get('phoneNumber')
         email_address = req_body.get('emailAddress')
-        time_zone = req_body.get('timeZone', 'Australia/Brisbane')  # Default to AEST if not provided
+        time_zone = req_body.get('timeZone', 'Australia/Brisbane')  # Default to AEST
 
-        # Validate required fields
         if not all([sender_id, preferred_date_time, duration_minutes, client_name, service, phone_number, email_address]):
             return func.HttpResponse(
                 json.dumps({
@@ -85,16 +85,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 mimetype="application/json"
             )
 
-        # Log the sender_id for tracking purposes
         logging.info(f"Booking slot for senderID: {sender_id}")
 
-        # Parse the preferred date and time
+        # Parse preferred date and time
         try:
             start_time = datetime.fromisoformat(preferred_date_time)
-            if start_time.tzinfo is None:  # Only localize if naive
+            if start_time.tzinfo is None:  # Localize naive datetime
                 start_time = pytz.timezone(time_zone).localize(start_time)
-            else:
-                logging.info(f"Datetime already has tzinfo: {start_time.tzinfo}")
         except ValueError:
             return func.HttpResponse(
                 json.dumps({"error": "Invalid preferredDateTime format. Must be ISO 8601."}),
@@ -104,11 +101,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         end_time = start_time + timedelta(minutes=duration_minutes)
 
-        # Convert to ISO format for Google Calendar
+        # Format times for Google Calendar
         start_time_str = start_time.isoformat()
         end_time_str = end_time.isoformat()
 
-        # Format the description
+        # Prepare event description
         description = (
             f"Service: {service}\n"
             f"Client Name: {client_name}\n"
@@ -116,7 +113,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             f"Email: {email_address}"
         )
 
-        # Add the calendar entry
+        # Add event to calendar
         event = add_calendar_entry(
             CALENDAR_ID,
             f'Appointment with {client_name}',

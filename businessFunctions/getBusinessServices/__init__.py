@@ -24,34 +24,39 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Parse the request body
         req_body = req.get_json()
-        sender_id = req_body.get("senderID")
-        business_id = req_body.get("businessID")
+        sender_id = req_body.get("sender_id")
+        business_id = req_body.get("business_id")
         fields = req_body.get("fields")  # Expecting a list of fields
         service_name = req_body.get("service_name")  # Optional service name for filtering
 
         # Validate required fields
         if not sender_id or not business_id:
             return func.HttpResponse(
-                json.dumps({"error": "Both senderID and businessID are required."}),
+                json.dumps({"error": "Both sender_id and business_id are required."}),
                 status_code=400,
                 mimetype="application/json"
             )
 
         # Log the sender ID for tracking purposes
-        logging.info(f"Request from senderID: {sender_id} for businessID: {business_id}")
+        logging.info(f"Request from sender_id: {sender_id} for business_id: {business_id}")
 
-        # Default fields to query
-        default_fields = ["service_id", "name", "description", "duration_minutes", "price"]
+        # Allowed and default fields
         allowed_fields = {"service_id", "name", "description", "duration_minutes", "price"}
+        default_fields = ["service_id", "name", "duration_minutes", "price"]  # Excluding description by default
 
         # Parse and validate fields
         if fields:
             fields = [field.strip() for field in fields if field.strip() in allowed_fields]
             if not fields:
-                logging.warning("No valid fields specified. Using default fields.")
+                logging.info("No valid fields specified. Using default fields.")
                 fields = default_fields
         else:
+            logging.info("Fields not provided. Using default fields.")
             fields = default_fields
+
+        # Check if the user explicitly requested descriptions
+        include_description = "description" in fields
+        logging.info(f"Include description: {include_description}")
 
         # Construct the SELECT clause
         select_clause = ", ".join(fields)
@@ -64,6 +69,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             query += " AND name ILIKE %s"  # Case-insensitive match for service name
             query_params.append(f"%{service_name.strip()}%")
 
+        # Log the query for debugging
+        logging.info(f"Fields requested: {fields}")
+        logging.info(f"Constructed query: {query} with params {query_params}")
+
         # Connect to PostgreSQL
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -74,7 +83,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
         cursor = conn.cursor()
 
-        logging.info(f"Executing query: {query}")
         cursor.execute(query, query_params)
         rows = cursor.fetchall()
 
@@ -90,30 +98,36 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         if services:
             logging.info(f"Query succeeded. Number of services found: {len(services)}")
             return func.HttpResponse(
-                json.dumps({"senderID": sender_id, "services": services}, default=json_serial),
+                json.dumps({"sender_id": sender_id, "services": services}, default=json_serial),
                 status_code=200,
                 mimetype="application/json"
             )
         else:
-            logging.warning(f"No services found for businessID: {business_id}")
+            logging.warning(f"No services found for business_id: {business_id}")
             return func.HttpResponse(
-                json.dumps({"senderID": sender_id, "error": "No services found for the specified business."}),
+                json.dumps({
+                    "sender_id": sender_id,
+                    "business_id": business_id,
+                    "fields": fields,
+                    "services": [],
+                    "error": "No services found for the specified business."
+                }),
                 status_code=404,
                 mimetype="application/json"
             )
 
     except psycopg2.Error as e:
-        logging.error(f"PostgreSQL error for senderID {sender_id}: {e}")
+        logging.error(f"PostgreSQL error for sender_id {sender_id}: {e}")
         return func.HttpResponse(
-            json.dumps({"senderID": sender_id, "error": "An error occurred while querying the database."}),
+            json.dumps({"sender_id": sender_id, "error": "An error occurred while querying the database."}),
             status_code=500,
             mimetype="application/json"
         )
 
     except Exception as e:
-        logging.error(f"Unexpected error for senderID {sender_id}: {e}")
+        logging.error(f"Unexpected error for sender_id {sender_id}: {e}")
         return func.HttpResponse(
-            json.dumps({"senderID": sender_id, "error": "Internal Server Error"}),
+            json.dumps({"sender_id": sender_id, "error": "Internal Server Error"}),
             status_code=500,
             mimetype="application/json"
         )
