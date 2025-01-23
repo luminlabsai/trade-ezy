@@ -230,15 +230,11 @@ def handle_get_business_services(arguments, business_id, sender_id):
     logging.info("Entered handle_get_business_services function.")
     logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
 
+    # Ensure the endpoint is configured
     endpoint = function_endpoints.get("getBusinessServices")
     if not endpoint:
         logging.error("Endpoint for getBusinessServices is not configured.")
         raise ValueError("Endpoint for getBusinessServices is not configured.")
-
-    # Ensure required arguments are included
-    arguments.setdefault("sender_id", sender_id)
-    arguments.setdefault("business_id", business_id)
-    logging.debug(f"Updated arguments for getBusinessServices: {arguments}")
 
     # Fetch all available services
     try:
@@ -269,8 +265,6 @@ def handle_get_business_services(arguments, business_id, sender_id):
 
     # Extract service_name from the query
     user_query = arguments.get("query", "").strip()
-    logging.info(f"Extracting service name from user query: {user_query}")
-    specific_service_name = extract_service_name_from_query(user_query, available_services)
     if not user_query:
         logging.info("User query is empty. Returning all available services.")
         follow_up_message = (
@@ -280,9 +274,8 @@ def handle_get_business_services(arguments, business_id, sender_id):
         store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
         return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
-    logging.debug(f"Specific service name extracted: {specific_service_name}")
-
-    # If no matching service is found, return the list of services
+    logging.info(f"Extracting service name from user query: {user_query}")
+    specific_service_name = extract_service_name_from_query(user_query, available_services)
     if not specific_service_name:
         follow_up_message = (
             f"I couldn't find a matching service for '{user_query}'. "
@@ -347,6 +340,7 @@ def handle_get_business_services(arguments, business_id, sender_id):
             status_code=500,
             mimetype="text/plain"
         )
+
 
 
 
