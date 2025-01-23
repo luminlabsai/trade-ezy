@@ -6,6 +6,7 @@ import json
 import azure.functions as func
 import psycopg2
 import string
+from rapidfuzz import process
 from fuzzywuzzy import process
 from uuid import uuid4
 from urllib.parse import quote
@@ -14,6 +15,7 @@ from function_endpoints import function_endpoints
 from user_manager import get_or_create_user, update_user_details
 import re
 from dateutil.parser import parse
+from datetime import datetime
 import logging
 
 # Configuration
@@ -109,7 +111,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             f"     a. `sender_id`: The unique ID of the user. "
             f"     b. `business_id`: The unique ID of the business. "
             f"2. If the user expresses interest in booking a service: "
-            f"   a. Automatically retrieve the duration (durationMinutes) from the service details."
+            f"   a. Automatically retrieve the duration (duration_minutes) from the service details."
             f"   b. Use the retrieved duration for checking slot availability and booking."
             f"   c. Only ask the user to confirm the duration if it is ambiguous or unavailable."
             f"3. Before proceeding with `bookSlot`, ensure you have collected all the necessary details: "
@@ -204,8 +206,6 @@ def handle_function_call(assistant_response, business_id, sender_id):
             response = handle_check_slot(arguments, business_id, sender_id)
         elif function_name == "bookSlot":
             response = handle_book_slot(arguments, business_id, sender_id)
-        elif function_name == "collectUserDetails":
-            response = handle_collect_user_details(arguments, business_id, sender_id)
         else:
             raise ValueError(f"Unsupported function name: {function_name}")
 
@@ -226,7 +226,11 @@ def handle_function_call(assistant_response, business_id, sender_id):
 
 
 
+
 def handle_get_business_services(arguments, business_id, sender_id):
+    """
+    Handles the 'getBusinessServices' function call, fetching details for all or specific services.
+    """
     logging.info("Entered handle_get_business_services function.")
     logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
 
@@ -236,138 +240,143 @@ def handle_get_business_services(arguments, business_id, sender_id):
         logging.error("Endpoint for getBusinessServices is not configured.")
         raise ValueError("Endpoint for getBusinessServices is not configured.")
 
-    # Fetch all available services
+    # Fetch all available business services early
     try:
-        logging.info("Sending request to fetch all available services.")
-        available_services_response = requests.post(
+        logging.info("Fetching business services from the endpoint.")
+        response = requests.post(
             endpoint,
-            json={"business_id": business_id, "sender_id": sender_id, "fields": ["name", "service_id"]}
+            json={
+                "business_id": business_id,
+                "sender_id": sender_id,
+                "fields": ["service_id", "name", "price", "duration_minutes"]
+            }
         )
-        available_services_response.raise_for_status()
-        available_services = [
-            service["name"].lower() for service in available_services_response.json().get("services", [])
-        ]
-        if not available_services:
-            logging.warning("No services found for the business.")
-            follow_up_message = (
-                "I couldn't find any services listed for this business. Please try again later."
-            )
+        response.raise_for_status()
+        business_services = response.json().get("services", [])
+
+        if not business_services:
+            logging.warning("No business services found for this business.")
+            follow_up_message = "I couldn't find any services listed for this business. Please try again later."
             store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
             return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
-        logging.debug(f"Available services fetched: {available_services}")
+        logging.debug(f"Fetched business services: {business_services}")
+
     except requests.RequestException as e:
-        logging.error(f"Error fetching available services: {e}")
+        logging.error(f"Error fetching business services: {e}")
         return func.HttpResponse(
-            "Failed to fetch available services. Please try again later.",
+            "Failed to fetch business services. Please try again later.",
             status_code=500,
             mimetype="text/plain"
         )
 
-    # Extract service_name from the query
-    user_query = arguments.get("query", "").strip()
+    # Extract and preprocess user query
+    user_query = arguments.get("query", "").strip().lower()
     if not user_query:
-        logging.info("User query is empty. Returning all available services.")
-        follow_up_message = (
-            f"We offer the following services: {', '.join([service.capitalize() for service in available_services])}. "
-            "Let me know which one you're interested in."
-        )
-        store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-        return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+        logging.info("User query is empty. Returning all business services.")
+        services_response = serialize_services_as_text(business_services)
+        store_chat_message(business_id, sender_id, "assistant", services_response, "formatted")
+        return func.HttpResponse(services_response, status_code=200, mimetype="text/plain")
 
-    logging.info(f"Extracting service name from user query: {user_query}")
-    specific_service_name = extract_service_name_from_query(user_query, available_services)
-    if not specific_service_name:
-        follow_up_message = (
-            f"I couldn't find a matching service for '{user_query}'. "
-            f"We offer the following services: {', '.join([service.capitalize() for service in available_services])}."
-        )
-        logging.info("No matching service name found. Returning fallback message.")
-        store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-        return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+    logging.info(f"Processing user query: {user_query}")
 
-    # Call getBusinessServices with specific service_name
-    get_services_payload = {
-        "sender_id": sender_id,
-        "business_id": business_id,
-        "fields": ["name", "price", "description"],
-        "service_name": specific_service_name
-    }
-    logging.debug(f"Payload for getBusinessServices call: {get_services_payload}")
+    # Pass available business services to preprocess_query
+    available_service_names = [service["name"] for service in business_services]
+    preprocessed_query = preprocess_query(user_query, available_service_names)
+    intent = preprocessed_query["intent"]
+    details = preprocessed_query["details"]
 
-    try:
-        logging.info(f"Calling getBusinessServices endpoint with payload: {get_services_payload}")
-        response = requests.post(endpoint, json=get_services_payload)
-        response.raise_for_status()
-        result = response.json()
-        logging.debug(f"Response from getBusinessServices: {result}")
-    except requests.RequestException as e:
-        logging.error(f"Error calling getBusinessServices: {e}")
-        return func.HttpResponse(
-            "Failed to retrieve service details. Please try again later.",
-            status_code=500,
-            mimetype="text/plain"
-        )
+    # Handle pricing intent with missing service name
+    if intent == "pricing" and "service_name" not in details:
+        logging.warning("Pricing intent detected but no service name matched.")
+        fallback_message = details.get("fallback_message", "I couldn't understand your request. Please try again.")
+        store_chat_message(business_id, sender_id, "assistant", fallback_message, "formatted")
+        return func.HttpResponse(fallback_message, status_code=200, mimetype="text/plain")
 
-    services = result.get("services", [])
-    logging.debug(f"Services retrieved: {services}")
-    if not services:
-        follow_up_message = f"No pricing details found for '{specific_service_name}'. Please try another query."
-        logging.info(f"No matching services found. Returning follow-up message.")
-        store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-        return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+    # Handle cases where a specific service is matched
+    if "service_name" in details:
+        matched_service_name = details["service_name"].lower()
+        service_details = next((s for s in business_services if s["name"].lower() == matched_service_name), None)
 
-    # Prepare the response for OpenAI
-    function_response_message = {
-        "role": "function",
-        "name": "getBusinessServices",
-        "content": json.dumps(result)
-    }
+        if service_details:
+            service_message = serialize_service_details_as_text(service_details)
+            store_chat_message(business_id, sender_id, "assistant", service_message, "formatted")
+            return func.HttpResponse(service_message, status_code=200, mimetype="text/plain")
 
-    # Call OpenAI to format the response naturally
-    try:
-        logging.info("Sending request to OpenAI to format the response.")
-        formatted_response = send_response_to_ai(
-            function_response_message,
-            business_id,
-            sender_id,
-            fallback_message="I couldn't retrieve the pricing details. Please try again."
-        )
-        return formatted_response
-    except Exception as e:
-        logging.error(f"Error formatting response with OpenAI: {e}.")
-        return func.HttpResponse(
-            "Failed to format the response. Please try again later.",
-            status_code=500,
-            mimetype="text/plain"
-        )
+    # If no specific service is matched, return all services as a human-readable list
+    services_response = serialize_services_as_text(business_services)
+    store_chat_message(business_id, sender_id, "assistant", services_response, "formatted")
+    return func.HttpResponse(services_response, status_code=200, mimetype="text/plain")
 
 
 
+def serialize_services_as_text(business_services):
+    """
+    Serializes a list of business services into a human-readable text format.
+    """
+    if not business_services:
+        return "No services are currently available."
+
+    lines = []
+    for service in business_services:
+        # Ensure all required fields are present and handle missing values gracefully
+        name = service.get('name', 'Unknown Service')
+        price = service.get('price', 'N/A')
+        duration = service.get('duration_minutes', 'N/A')
+
+        # Format the line with service details
+        line = f"- {name} (Price: ${price}, Duration: {duration} mins)"
+        lines.append(line)
+
+    return "Here are the services we offer:\n" + "\n".join(lines)
+
+
+
+def serialize_service_details_as_text(service_details):
+    """
+    Serializes a single service's details into a human-readable text format.
+    """
+    return (
+        f"Service: {service_details['name']}\n"
+        f"Price: ${service_details['price']}\n"
+        f"Duration: {service_details['duration_minutes']} mins\n"
+    )
 
 
 def handle_check_slot(arguments, business_id, sender_id):
+    """
+    Handles calling the checkSlot function to check slot availability.
+    """
     endpoint = function_endpoints.get("checkSlot")
     if not endpoint:
         raise ValueError("Endpoint for checkSlot is not configured.")
 
     logging.info(f"Calling checkSlot with arguments: {arguments}")
 
+    # Build the payload
+    payload = {
+        "senderID": sender_id,  # Ensure it matches the expected naming
+        "preferredDateTime": arguments.get("preferredDateTime"),
+        "durationMinutes": arguments.get("durationMinutes"),
+        "serviceID": arguments.get("serviceID"),  # Optional if required
+        "business_id": business_id
+    }
+
     try:
         # Make the request to the checkSlot endpoint
-        response = requests.post(endpoint, json={"business_id": business_id, "sender_id": sender_id, **arguments})
+        response = requests.post(endpoint, json=payload)
         response.raise_for_status()
         result = response.json()
     except requests.RequestException as e:
         logging.error(f"Error calling checkSlot: {e}")
         return func.HttpResponse(
-            "Failed to check slot availability. Please try again later.",
+            json.dumps({"error": "Failed to check slot availability. Please try again later."}),
             status_code=500,
-            mimetype="text/plain"
+            mimetype="application/json"
         )
 
     logging.info(f"Response from checkSlot: {result}")
 
-    # Extract availability and preferred date-time
+    # Extract availability from the result
     is_available = result.get("isAvailable")
     preferred_date_time = arguments.get("preferredDateTime")
 
@@ -380,26 +389,7 @@ def handle_check_slot(arguments, business_id, sender_id):
         store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
         return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
-    # Slot is available; check for missing user details
-    user_info = get_or_create_user(sender_id)
-    missing_details = []
-    if not user_info.get("name"):
-        missing_details.append("name")
-    if not user_info.get("phone_number"):
-        missing_details.append("phone number")
-    if not user_info.get("email"):
-        missing_details.append("email address")
-
-    if missing_details:
-        # Prompt for missing details
-        follow_up_message = (
-            f"The slot at {preferred_date_time} is available. "
-            f"However, I need your {', '.join(missing_details)} to confirm the booking."
-        )
-        store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-        return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
-
-    # Slot is available, and all details are present; confirm booking
+    # Slot is available
     follow_up_message = (
         f"The slot at {preferred_date_time} is available. "
         "Would you like to proceed with confirming this booking?"
@@ -412,9 +402,13 @@ def handle_check_slot(arguments, business_id, sender_id):
 
 
 def handle_book_slot(arguments, business_id, sender_id):
+    """
+    Handles the 'bookSlot' function call to confirm a booking with all necessary details.
+    """
     logging.info("Entered handle_book_slot function.")
     logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
 
+    # Ensure the endpoint is configured
     endpoint = function_endpoints.get("bookSlot")
     if not endpoint:
         logging.error("Endpoint for bookSlot is not configured.")
@@ -422,7 +416,7 @@ def handle_book_slot(arguments, business_id, sender_id):
 
     logging.info("Preparing to book slot.")
 
-    # Retrieve the latest user details
+    # Retrieve user details or create a user record if not found
     try:
         user_info = get_or_create_user(sender_id)
         logging.debug(f"Retrieved user info: {user_info}")
@@ -434,15 +428,13 @@ def handle_book_slot(arguments, business_id, sender_id):
             mimetype="text/plain"
         )
 
-    # Extract or fallback to user details
+    # Extract user details from arguments or fallback to database values
     client_name = arguments.get("clientName") or user_info.get("name")
     phone_number = arguments.get("phoneNumber") or user_info.get("phone_number")
     email_address = arguments.get("emailAddress") or user_info.get("email")
     service_id = arguments.get("serviceID")
     preferred_date_time = arguments.get("preferredDateTime")
-    duration_minutes = arguments.get("durationMinutes")
-
-    logging.debug(f"Extracted details: {locals()}")
+    duration_minutes = arguments.get("duration_minutes")  # Always provided per the simplified approach
 
     # Validate preferred_date_time format
     if preferred_date_time:
@@ -455,25 +447,40 @@ def handle_book_slot(arguments, business_id, sender_id):
                 mimetype="text/plain"
             )
 
-    # Fetch service duration if not provided
-    if not duration_minutes and service_id:
-        try:
-            service_details = fetch_service_details(business_id, service_id)
-            duration_minutes = service_details.get("duration_minutes")
-        except Exception as e:
-            logging.error(f"Failed to fetch service duration: {e}")
-            return func.HttpResponse(
-                "Failed to retrieve service details. Please try again later.",
-                status_code=500,
-                mimetype="text/plain"
-            )
+    # Check for missing user details and collect them
+    try:
+        missing_user_details = [
+            key for key in ["name", "phone_number", "email"]
+            if not locals().get(key)
+        ]
+        if missing_user_details:
+            logging.info(f"Missing user details detected: {missing_user_details}")
+            # Use handle_collect_user_details to update user details
+            collect_details_result = handle_collect_user_details({"query": arguments.get("query", "")}, business_id, sender_id)
+            if "missing_details" in collect_details_result:
+                follow_up_message = f"Could you please provide your {', '.join(collect_details_result['missing_details'])}?"
+                logging.info(f"Prompting user for missing details: {collect_details_result['missing_details']}")
+                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+            elif "error" in collect_details_result:
+                return func.HttpResponse(
+                    json.dumps({"error": collect_details_result["error"]}),
+                    status_code=500,
+                    mimetype="application/json"
+                )
+    except Exception as e:
+        logging.error(f"Error while collecting user details: {e}")
+        return func.HttpResponse(
+            "Failed to collect user details. Please try again later.",
+            status_code=500,
+            mimetype="text/plain"
+        )
 
-    # Validate all required details
-    missing_details = [key for key in ["name", "phone_number", "email", "service", "preferred_date_time", "duration_minutes"]
-                       if not locals().get(key)]
-    if missing_details:
-        follow_up_message = f"Please provide your {', '.join(missing_details)} to confirm the booking."
-        logging.info(f"Missing details: {missing_details}")
+    # Validate all required booking details
+    booking_missing_details = [key for key in ["service_id", "preferred_date_time", "duration_minutes"] if not locals().get(key)]
+    if booking_missing_details:
+        follow_up_message = f"Please provide your {', '.join(booking_missing_details)} to confirm the booking."
+        logging.info(f"Missing booking details: {booking_missing_details}")
         store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
         return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
@@ -486,7 +493,7 @@ def handle_book_slot(arguments, business_id, sender_id):
         "emailAddress": email_address,
         "serviceID": service_id,
         "preferredDateTime": preferred_date_time,
-        "durationMinutes": duration_minutes
+        "duration_minutes": duration_minutes
     }
     try:
         logging.info(f"Booking slot with payload: {booking_payload}")
@@ -508,32 +515,61 @@ def handle_book_slot(arguments, business_id, sender_id):
         )
 
 
+
 def fetch_service_details(business_id, service_id):
     """
     Fetch details for a specific service, such as durationMinutes, from the services data.
     """
+    # Ensure the endpoint is configured
     service_endpoint = function_endpoints.get("getBusinessServices")
     if not service_endpoint:
+        logging.error("getBusinessServices endpoint is not configured.")
         raise ValueError("getBusinessServices endpoint is not configured.")
 
+    # Prepare the payload
     payload = {
         "business_id": business_id,
         "sender_id": "SYSTEM",  # Indicating a system call
-        "fields": ["service_id", "name", "duration_minutes"],
-        "service_name": service_id
+        "fields": ["service_id", "name", "price", "_minutes"],
+        "service_id": service_id
     }
+
     logging.info(f"Fetching service details with payload: {payload}")
-    response = requests.post(service_endpoint, json=payload)
-    response.raise_for_status()
-    services = response.json().get("services", [])
-    if services:
-        return services[0]
-    raise ValueError(f"Service ID {service_id} not found.")
+
+    try:
+        # Make the request to fetch service details
+        response = requests.post(service_endpoint, json=payload)
+        response.raise_for_status()
+
+        # Parse the response
+        services = response.json().get("services", [])
+        if not services:
+            logging.warning(f"No service found with ID: {service_id}")
+            raise ValueError(f"Service ID {service_id} not found.")
+
+        logging.info(f"Service details fetched successfully: {services[0]}")
+        return services[0]  # Return the first matching service
+
+    except requests.RequestException as e:
+        logging.error(f"Error fetching service details: {e}")
+        raise ValueError("Failed to fetch service details. Please try again later.")
+
 
 
 
 
 def handle_collect_user_details(arguments, business_id, sender_id):
+    """
+    Extracts and updates user details in the database and determines missing details.
+    
+    Args:
+        arguments (dict): Arguments containing the user query.
+        business_id (str): The business ID.
+        sender_id (str): The sender ID.
+    
+    Returns:
+        dict: A dictionary containing missing details or confirmation of completion.
+    """
     logging.info("Entered handle_collect_user_details function.")
     logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
 
@@ -541,87 +577,55 @@ def handle_collect_user_details(arguments, business_id, sender_id):
     user_query = arguments.get("query", "").strip()
     if not user_query:
         logging.warning("User query is missing or empty.")
-        return func.HttpResponse(
-            json.dumps({"error": "No user query provided for extracting details."}),
-            status_code=400,
-            mimetype="application/json"
-        )
+        raise ValueError("No user query provided for extracting details.")
     logging.info(f"Processing user query for details extraction: {user_query}")
+
+    # Retrieve or create the user record
+    try:
+        current_user_info = get_or_create_user(sender_id)
+        if not current_user_info:
+            raise ValueError(f"Failed to retrieve or create user for sender_id: {sender_id}")
+        logging.debug(f"Current user details: {current_user_info}")
+    except Exception as e:
+        logging.error(f"Error in get_or_create_user: {e}", exc_info=True)
+        raise
 
     # Extract details from the user query
     try:
         extracted_details = extract_user_details(user_query)
-        logging.debug(f"Extracted details from query: {extracted_details}")
-    except Exception as e:
-        logging.error(f"Error during details extraction: {e}", exc_info=True)
-        return func.HttpResponse(
-            json.dumps({"error": "Failed to extract user details. Please try again later."}),
-            status_code=500,
-            mimetype="application/json"
-        )
-
-    # Update user information in the database if new details are found
-    if extracted_details:
-        try:
+        if extracted_details:
+            logging.debug(f"Extracted details from query: {extracted_details}")
             logging.info(f"Updating user details in the database: {extracted_details}")
             update_user_details(sender_id, extracted_details)
-            logging.info("User details successfully updated.")
-        except Exception as e:
-            logging.error(f"Error updating user details: {e}", exc_info=True)
-            return func.HttpResponse(
-                json.dumps({"error": "Failed to update user details. Please try again later."}),
-                status_code=500,
-                mimetype="application/json"
-            )
-    else:
-        logging.warning("No details extracted from the user query.")
+            logging.info(f"User details successfully updated for sender_id: {sender_id}")
+        else:
+            logging.warning("No details extracted from the user query.")
+    except Exception as e:
+        logging.error(f"Error during details extraction or update: {e}", exc_info=True)
+        raise
 
-    # Retrieve the current user information from the database
+    # Determine missing details
     try:
-        current_user_info = get_user_details(sender_id)
-        logging.debug(f"Current user details from database: {current_user_info}")
+        updated_user_info = get_user_details(sender_id)
+        logging.debug(f"Updated user details from database: {updated_user_info}")
         missing_details = [
             key for key in ["name", "phone_number", "email"]
-            if not current_user_info.get(key)
+            if not updated_user_info.get(key)
         ]
     except Exception as e:
-        logging.error(f"Error fetching current user details: {e}", exc_info=True)
-        return func.HttpResponse(
-            json.dumps({"error": "Failed to fetch current user details. Please try again later."}),
-            status_code=500,
-            mimetype="application/json"
-        )
+        logging.error(f"Error fetching updated user details: {e}", exc_info=True)
+        raise
 
-    # Determine the next step based on missing details
+    # Return missing details or confirmation
     if missing_details:
-        follow_up_message = f"Could you please provide your {', '.join(missing_details)}?"
         logging.info(f"Missing details detected: {missing_details}")
+        return {"missing_details": missing_details}
     else:
-        follow_up_message = (
-            "Thank you! All your details have been recorded. "
-            "You can now proceed with booking or other requests."
-        )
         logging.info("All user details are complete.")
+        return {"message": "All user details have been recorded."}
 
-    # Store the follow-up message in chat history
-    try:
-        logging.info("Storing follow-up message in chat history.")
-        store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-    except Exception as e:
-        logging.error(f"Error storing follow-up message: {e}", exc_info=True)
-        return func.HttpResponse(
-            json.dumps({"error": "Failed to store follow-up message in chat history. Please try again later."}),
-            status_code=500,
-            mimetype="application/json"
-        )
 
-    # Return the follow-up message as a response
-    logging.info(f"Returning follow-up message: {follow_up_message}")
-    return func.HttpResponse(
-        json.dumps({"message": follow_up_message}),
-        status_code=200,
-        mimetype="application/json"
-    )
+
 
 
 
@@ -636,32 +640,39 @@ def preprocess_query(query, business_services=None):
     Returns:
         dict: Contains detected intent and extracted details.
     """
-    # Define keywords and patterns
+    # Define intent keywords and patterns
     slot_keywords = ["book", "schedule", "reserve", "appointment"]
+    pricing_keywords = ["how much", "price", "cost"]
     user_detail_keywords = ["name", "phone", "email", "contact", "reach me"]
     date_time_pattern = r"\b(\d{1,2}(st|nd|rd|th)?\s\w+(\s\d{4})?\s?\d{1,2}(am|pm)?)\b"
-    
+
     # Initialize intent and details
     intent = "general"
     details = {}
 
     query_lower = query.lower()
 
-    # Detect booking intent
+    # Debugging: Log the query
+    logging.debug(f"Processing query: {query}")
+
+    # Detect intents
     if any(keyword in query_lower for keyword in slot_keywords):
         intent = "booking"
-
-    # Detect user detail intent
-    if any(keyword in query_lower for keyword in user_detail_keywords):
+    elif any(keyword in query_lower for keyword in pricing_keywords):
+        intent = "pricing"
+    elif any(keyword in query_lower for keyword in user_detail_keywords):
         intent = "user_details"
 
-    # Extract service name dynamically from business_services
+    # Process service name if the list is available
     if business_services:
-        matched_service = next(
-            (service for service in business_services if service.lower() in query_lower), None
-        )
-        if matched_service:
-            details["service_name"] = matched_service
+        matched_service = process.extractOne(query_lower, business_services, scorer=process.fuzz.partial_ratio)
+        if matched_service and matched_service[1] > 70:  # Confidence threshold
+            details["service_name"] = matched_service[0]
+        elif intent == "pricing":
+            logging.warning("Pricing intent detected but no matching service name found.")
+            details["fallback_message"] = "I couldn't find the service you're asking about. Can you clarify?"
+    elif intent in ["pricing", "booking"]:
+        logging.warning("No business services provided for service name matching.")
 
     # Extract date and time
     date_time_match = re.search(date_time_pattern, query)
@@ -677,12 +688,6 @@ def preprocess_query(query, business_services=None):
 def parse_date_time(date_string):
     """
     Parses a date string into a datetime object.
-
-    Args:
-        date_string (str): The date string to parse.
-
-    Returns:
-        datetime or None: Parsed datetime object or None if parsing fails.
     """
     try:
         logging.info(f"Parsing date string: {date_string}")
@@ -695,36 +700,35 @@ def parse_date_time(date_string):
 
 
 
-
-
-def extract_service_name_from_query(user_query, available_services):
+def extract_service_name_from_query(user_query, business_services):
     """
-    Extracts the service name from the user query by matching it with available services using fuzzy matching.
+    Extracts the service name from the user query by matching it with available business services using fuzzy matching.
     """
     logging.debug(f"Extracting service name from query: '{user_query}'")
-    logging.debug(f"Available services for matching: {available_services}")
+    logging.debug(f"Available business services for matching: {business_services}")
 
     # Check for missing inputs
     if not user_query:
         logging.warning("User query is missing. Returning None.")
         return None
-    if not available_services:
-        logging.warning("Available services are missing. Returning None.")
+    if not business_services:
+        logging.warning("Available business services are missing. Returning None.")
         return None
 
     # Normalize and use fuzzy matching
     user_query_lower = user_query.strip().lower()
-    available_services_lower = [service.lower() for service in available_services]
+    business_services_lower = [service.lower() for service in business_services]
 
     # Use fuzzy matching for best match
-    match, score = process.extractOne(user_query_lower, available_services_lower)
+    match, score = process.extractOne(user_query_lower, business_services_lower)
     if match and score >= 80:  # Threshold for matching (adjust as needed)
-        matched_service = available_services[available_services_lower.index(match)]
+        matched_service = business_services[business_services_lower.index(match)]
         logging.info(f"Fuzzy matched service: '{matched_service}' (score: {score})")
         return matched_service
 
-    logging.warning("No matching service name found using fuzzy matching.")
+    logging.warning("No matching business service name found using fuzzy matching.")
     return None
+
 
 
 
@@ -750,7 +754,7 @@ def get_service_name(service_id, business_id):
 
     query = """
         SELECT name
-        FROM public.services
+        FROM public.business_services
         WHERE service_id = %s AND business_id = %s
     """
 
@@ -942,37 +946,35 @@ def call_function_endpoint(function_name, payload, sender_id, business_id):
 
 
 
-def extract_user_details(query):
+def extract_user_details(user_query):
     """
-    Extract user details (name, phone number, and email) from a query.
-
-    Args:
-        query (str): User input text.
-
-    Returns:
-        dict: Extracted details, e.g., {"name": "John Doe", "phone_number": "1234567890", "email": "john@example.com"}.
+    Extract user details (name, phone number, email) from the query.
     """
-    details = {}
+    import re
+    extracted_details = {}
 
-    # Extract email
-    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    email_match = re.search(email_pattern, query)
-    if email_match:
-        details["email"] = email_match.group()
+    try:
+        # Extract phone number
+        phone_match = re.search(r'\b\d{10}\b', user_query)  # Matches 10-digit phone numbers
+        if phone_match:
+            extracted_details["phone_number"] = phone_match.group()
 
-    # Extract phone number
-    phone_pattern = r'(\+?\d{1,4}[-.\s]?)?(\(?\d{3}\)?[-.\s]?)?[\d\s.-]{7,10}'
-    phone_match = re.search(phone_pattern, query)
-    if phone_match:
-        details["phone_number"] = phone_match.group().strip()
+        # Extract name (assumes format "My name is [Name]")
+        name_match = re.search(r"my name is ([A-Z][a-z]+)", user_query, re.IGNORECASE)
+        if name_match:
+            extracted_details["name"] = name_match.group(1)
 
-    # Extract name (simple heuristic for capitalized words)
-    name_pattern = r'\b[A-Z][a-z]+\s[A-Z][a-z]+\b'
-    name_match = re.search(name_pattern, query)
-    if name_match:
-        details["name"] = name_match.group()
+        # Extract email address
+        email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', user_query)
+        if email_match:
+            extracted_details["email"] = email_match.group()
 
-    return details
+        logging.debug(f"Extracted details: {extracted_details}")
+    except Exception as e:
+        logging.error(f"Error extracting details: {e}", exc_info=True)
+
+    return extracted_details
+
 
 
 
@@ -1183,3 +1185,4 @@ def get_active_booking(sender_id, business_id):
                 conn.close()
         except Exception as cleanup_error:
             logging.error(f"Error during connection cleanup: {cleanup_error}")
+

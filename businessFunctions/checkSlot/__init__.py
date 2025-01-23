@@ -57,7 +57,6 @@ def is_time_slot_available(calendar_id, start_time, end_time):
 def main(req: func.HttpRequest) -> func.HttpResponse:
     """Main function to handle slot availability checks."""
     try:
-        # Parse and validate request
         req_body = req.get_json()
         sender_id = req_body.get('senderID')
         preferred_date_time = req_body.get('preferredDateTime')
@@ -72,14 +71,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         logging.info(f"Checking slot for senderID: {sender_id}")
 
-        # Convert preferred_date_time to UTC
         start_time = datetime.fromisoformat(preferred_date_time.replace("Z", "+00:00")).astimezone(timezone.utc)
         end_time = start_time + timedelta(minutes=duration_minutes)
-
         start_time_str = start_time.isoformat()
         end_time_str = end_time.isoformat()
 
-        # Check availability
         is_available = is_time_slot_available(CALENDAR_ID, start_time_str, end_time_str)
 
         return func.HttpResponse(

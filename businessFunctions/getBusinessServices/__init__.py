@@ -54,9 +54,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             logging.info("Fields not provided. Using default fields.")
             fields = default_fields
 
-        # Check if the user explicitly requested descriptions
-        include_description = "description" in fields
-        logging.info(f"Include description: {include_description}")
+        # Ensure `duration_minutes` is always included
+        if "duration_minutes" not in fields:
+            fields.append("duration_minutes")
+            logging.info("Ensuring 'duration_minutes' is included in the fields.")
 
         # Construct the SELECT clause
         select_clause = ", ".join(fields)

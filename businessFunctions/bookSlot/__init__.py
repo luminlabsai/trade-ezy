@@ -71,10 +71,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         preferred_date_time = req_body.get('preferredDateTime')
         duration_minutes = req_body.get('durationMinutes')
         client_name = req_body.get('clientName')
-        service = req_body.get('service')  # Updated field name
+        service = req_body.get('service')
         phone_number = req_body.get('phoneNumber')
         email_address = req_body.get('emailAddress')
-        time_zone = req_body.get('timeZone', 'Australia/Brisbane')  # Default to AEST
+        time_zone = req_body.get('timeZone', 'Australia/Brisbane')
 
         if not all([sender_id, preferred_date_time, duration_minutes, client_name, service, phone_number, email_address]):
             return func.HttpResponse(
@@ -90,7 +90,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # Parse preferred date and time
         try:
             start_time = datetime.fromisoformat(preferred_date_time)
-            if start_time.tzinfo is None:  # Localize naive datetime
+            if start_time.tzinfo is None:
                 start_time = pytz.timezone(time_zone).localize(start_time)
         except ValueError:
             return func.HttpResponse(
@@ -100,8 +100,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             )
 
         end_time = start_time + timedelta(minutes=duration_minutes)
-
-        # Format times for Google Calendar
         start_time_str = start_time.isoformat()
         end_time_str = end_time.isoformat()
 
