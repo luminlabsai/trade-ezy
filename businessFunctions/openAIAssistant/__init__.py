@@ -112,12 +112,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             f"     b. `business_id`: The unique ID of the business. "
             f"2. If the user expresses interest in booking a service: "
             f"   a. Automatically retrieve the duration (duration_minutes) from the service details."
-            f"   b. Use the retrieved duration for checking slot availability and booking."
-            f"   c. Only ask the user to confirm the duration if it is ambiguous or unavailable."
-            f"3. Before proceeding with `bookSlot`, ensure you have collected all the necessary details: "
-            f"   - Date and time of the appointment. "
-            f"   - Client information (e.g., name, phone number, email address). "
-            f"4. Use `bookSlot` to schedule the appointment only after all details are confirmed. "
+            f"   b. Askf for the Date and time of the appointment. "
+            f"   c. Use the retrieved duration and call checkSlot for checking slot availability and booking."
+            f"   d. Only ask the user to confirm the duration if it is ambiguous or unavailable."
+            f"3. If the slot is available, call `bookSlot`, and:"
+            f"   - Ask for client information (name, phone number, email address). "
+            f"   - Only ask for the user details after the slot availibility has been confirmed, never before"
+            f"   - Use `bookSlot` to schedule the appointment only after all details are confirmed. "
             f"5. Avoid redundant function calls. "
             f"   - Do not call `getBusinessServices` if the list of services has already been fetched in this session. "
             f"6. Clearly communicate progress and outcomes to the user at each step."
@@ -346,6 +347,18 @@ def handle_check_slot(arguments, business_id, sender_id):
     """
     Handles calling the checkSlot function to check slot availability.
     """
+
+    # Extract user details from the query, if available
+    user_query = arguments.get("query", "")
+    if user_query:
+        try:
+            extracted_details = extract_user_details(user_query)
+            if extracted_details:
+                logging.info(f"Extracted user details during checkSlot: {extracted_details}")
+                update_user_details(sender_id, extracted_details)  # Update the database
+        except Exception as e:
+            logging.error(f"Error extracting or updating user details during checkSlot: {e}")
+
     endpoint = function_endpoints.get("checkSlot")
     if not endpoint:
         raise ValueError("Endpoint for checkSlot is not configured.")
@@ -408,6 +421,17 @@ def handle_book_slot(arguments, business_id, sender_id):
     logging.info("Entered handle_book_slot function.")
     logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
 
+    # Extract user details from the query, if available
+    user_query = arguments.get("query", "")
+    if user_query:
+        try:
+            extracted_details = extract_user_details(user_query)
+            if extracted_details:
+                logging.info(f"Extracted user details during checkSlot: {extracted_details}")
+                update_user_details(sender_id, extracted_details)  # Update the database
+        except Exception as e:
+            logging.error(f"Error extracting or updating user details during checkSlot: {e}")
+
     # Ensure the endpoint is configured
     endpoint = function_endpoints.get("bookSlot")
     if not endpoint:
@@ -416,19 +440,19 @@ def handle_book_slot(arguments, business_id, sender_id):
 
     logging.info("Preparing to book slot.")
 
-    # Retrieve user details or create a user record if not found
+    # Retrieve or create the user record
     try:
         user_info = get_or_create_user(sender_id)
-        logging.debug(f"Retrieved user info: {user_info}")
+        logging.debug(f"Retrieved or created user info: {user_info}")
     except Exception as e:
-        logging.error(f"Error retrieving user info: {e}")
+        logging.error(f"Error retrieving or creating user: {e}")
         return func.HttpResponse(
-            "Failed to retrieve user details. Please try again later.",
+            "Failed to retrieve or create user details. Please try again later.",
             status_code=500,
-            mimetype="text/plain"
+            mimetype="application/json"
         )
 
-    # Extract user details from arguments or fallback to database values
+    # Extract user details or fallback to database values
     client_name = arguments.get("clientName") or user_info.get("name")
     phone_number = arguments.get("phoneNumber") or user_info.get("phone_number")
     email_address = arguments.get("emailAddress") or user_info.get("email")
@@ -447,44 +471,30 @@ def handle_book_slot(arguments, business_id, sender_id):
                 mimetype="text/plain"
             )
 
-    # Check for missing user details and collect them
-    try:
-        missing_user_details = [
-            key for key in ["name", "phone_number", "email"]
-            if not locals().get(key)
-        ]
-        if missing_user_details:
-            logging.info(f"Missing user details detected: {missing_user_details}")
-            # Use handle_collect_user_details to update user details
-            collect_details_result = handle_collect_user_details({"query": arguments.get("query", "")}, business_id, sender_id)
-            if "missing_details" in collect_details_result:
-                follow_up_message = f"Could you please provide your {', '.join(collect_details_result['missing_details'])}?"
-                logging.info(f"Prompting user for missing details: {collect_details_result['missing_details']}")
-                store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-                return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
-            elif "error" in collect_details_result:
-                return func.HttpResponse(
-                    json.dumps({"error": collect_details_result["error"]}),
-                    status_code=500,
-                    mimetype="application/json"
-                )
-    except Exception as e:
-        logging.error(f"Error while collecting user details: {e}")
-        return func.HttpResponse(
-            "Failed to collect user details. Please try again later.",
-            status_code=500,
-            mimetype="text/plain"
-        )
-
-    # Validate all required booking details
-    booking_missing_details = [key for key in ["service_id", "preferred_date_time", "duration_minutes"] if not locals().get(key)]
-    if booking_missing_details:
-        follow_up_message = f"Please provide your {', '.join(booking_missing_details)} to confirm the booking."
-        logging.info(f"Missing booking details: {booking_missing_details}")
+    # Check for missing user details and prompt if needed
+    missing_user_details = [key for key in ["name", "phone_number", "email"] if not locals().get(key)]
+    if missing_user_details:
+        follow_up_message = f"Could you please provide your {', '.join(missing_user_details)} to proceed with booking?"
+        logging.info(f"Prompting user for missing details: {missing_user_details}")
         store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
         return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
-    # Prepare and send booking request
+    # Check slot availability before proceeding with booking
+    logging.info("Calling checkSlot to verify availability.")
+    slot_check_response = handle_check_slot(
+        {
+            "serviceID": service_id,
+            "preferredDateTime": preferred_date_time,
+            "durationMinutes": duration_minutes,
+        },
+        business_id,
+        sender_id,
+    )
+
+    if not isinstance(slot_check_response, func.HttpResponse) or slot_check_response.status_code != 200:
+        return slot_check_response
+
+    # Proceed with booking if slot is available
     booking_payload = {
         "business_id": business_id,
         "sender_id": sender_id,
@@ -493,7 +503,7 @@ def handle_book_slot(arguments, business_id, sender_id):
         "emailAddress": email_address,
         "serviceID": service_id,
         "preferredDateTime": preferred_date_time,
-        "duration_minutes": duration_minutes
+        "duration_minutes": duration_minutes,
     }
     try:
         logging.info(f"Booking slot with payload: {booking_payload}")
@@ -513,6 +523,8 @@ def handle_book_slot(arguments, business_id, sender_id):
             status_code=500,
             mimetype="text/plain"
         )
+
+
 
 
 
@@ -555,74 +567,6 @@ def fetch_service_details(business_id, service_id):
         raise ValueError("Failed to fetch service details. Please try again later.")
 
 
-
-
-
-def handle_collect_user_details(arguments, business_id, sender_id):
-    """
-    Extracts and updates user details in the database and determines missing details.
-    
-    Args:
-        arguments (dict): Arguments containing the user query.
-        business_id (str): The business ID.
-        sender_id (str): The sender ID.
-    
-    Returns:
-        dict: A dictionary containing missing details or confirmation of completion.
-    """
-    logging.info("Entered handle_collect_user_details function.")
-    logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
-
-    # Extract user query
-    user_query = arguments.get("query", "").strip()
-    if not user_query:
-        logging.warning("User query is missing or empty.")
-        raise ValueError("No user query provided for extracting details.")
-    logging.info(f"Processing user query for details extraction: {user_query}")
-
-    # Retrieve or create the user record
-    try:
-        current_user_info = get_or_create_user(sender_id)
-        if not current_user_info:
-            raise ValueError(f"Failed to retrieve or create user for sender_id: {sender_id}")
-        logging.debug(f"Current user details: {current_user_info}")
-    except Exception as e:
-        logging.error(f"Error in get_or_create_user: {e}", exc_info=True)
-        raise
-
-    # Extract details from the user query
-    try:
-        extracted_details = extract_user_details(user_query)
-        if extracted_details:
-            logging.debug(f"Extracted details from query: {extracted_details}")
-            logging.info(f"Updating user details in the database: {extracted_details}")
-            update_user_details(sender_id, extracted_details)
-            logging.info(f"User details successfully updated for sender_id: {sender_id}")
-        else:
-            logging.warning("No details extracted from the user query.")
-    except Exception as e:
-        logging.error(f"Error during details extraction or update: {e}", exc_info=True)
-        raise
-
-    # Determine missing details
-    try:
-        updated_user_info = get_user_details(sender_id)
-        logging.debug(f"Updated user details from database: {updated_user_info}")
-        missing_details = [
-            key for key in ["name", "phone_number", "email"]
-            if not updated_user_info.get(key)
-        ]
-    except Exception as e:
-        logging.error(f"Error fetching updated user details: {e}", exc_info=True)
-        raise
-
-    # Return missing details or confirmation
-    if missing_details:
-        logging.info(f"Missing details detected: {missing_details}")
-        return {"missing_details": missing_details}
-    else:
-        logging.info("All user details are complete.")
-        return {"message": "All user details have been recorded."}
 
 
 
