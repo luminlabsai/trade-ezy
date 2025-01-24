@@ -102,27 +102,34 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         # Add system instructions with dynamic context
         system_message = (
-            f"You are assisting with service and booking inquiries for a business. "
-            f"The unique ID of the business is {business_id}. "
-            f"Here are the steps you should follow: "
-            f"1. If the user asks about services, use `getBusinessServices` to fetch and present the list of services. "
-            f"   - Only call `getBusinessServices` once per conversation unless explicitly asked to repeat it. "
-            f"   - Always include the following parameters when calling functions: "
-            f"     a. `sender_id`: The unique ID of the user. "
-            f"     b. `business_id`: The unique ID of the business. "
-            f"2. If the user expresses interest in booking a service: "
-            f"   a. Automatically retrieve the duration (duration_minutes) from the service details."
-            f"   b. Askf for the Date and time of the appointment. "
-            f"   c. Use the retrieved duration and call checkSlot for checking slot availability and booking."
-            f"   d. Only ask the user to confirm the duration if it is ambiguous or unavailable."
-            f"3. If the slot is available, call `bookSlot`, and:"
-            f"   - Ask for client information (name, phone number, email address). "
-            f"   - Only ask for the user details after the slot availibility has been confirmed, never before"
-            f"   - Use `bookSlot` to schedule the appointment only after all details are confirmed. "
-            f"5. Avoid redundant function calls. "
-            f"   - Do not call `getBusinessServices` if the list of services has already been fetched in this session. "
+            f"You assist with service and booking inquiries for a business. The business ID is {business_id}. "
+            f"Follow these steps: "
+            f"1. For service inquiries, use `getBusinessServices` to fetch and present the list of services. "
+            f"   - Call `getBusinessServices` only once per conversation unless explicitly requested. "
+            f"   - Always include `sender_id` (user ID) and `business_id` (business ID) in function calls. "
+            f"2. For booking inquiries: "
+            f"   a. Automatically retrieve `duration_minutes` from service details. "
+            f"   b. Ask for the date and time of the appointment. "
+            f"   c. Call `checkSlot` to verify slot availability using the retrieved duration. "
+            f"   d. Confirm the duration with the user only if it is ambiguous or missing. "
+            f"   e. Always extract all user details provided in the query, including name, phone number, and email. "
+            f"      - Return these details as structured JSON in function calls using the format: "
+            f"        {{'function_call': {{'name': 'updateUserDetails', 'arguments': {{'name': 'John', 'phone_number': '9876543210', 'email': 'john.doe@example.com'}}}}}}. "
+            f"      - If any details are missing, explicitly ask the user to provide them. "
+            f"      - Use the function name `updateUserDetails` and include all available fields. "
+            f"      - Do not respond with natural language if user details are provided. "
+            f"   f. Always include extracted details in function calls like `checkSlot`, `bookSlot` and `updateUserDetails`. "
+            f"3. If the slot is available, proceed to book: "
+            f"   - Collect client details (name, phone number, email) after slot availability is confirmed. "
+            f"   - Use `bookSlot` only after all details are confirmed. "
+            f"4. Avoid asking for user details again if they are already stored. "
+            f"5. Avoid redundant function calls: "
+            f"   - Do not call `getBusinessServices` again if services have already been fetched in this session. "
             f"6. Clearly communicate progress and outcomes to the user at each step."
         )
+
+
+
 
         messages.insert(0, {"role": "system", "content": system_message})
         logging.debug(f"Constructed messages: {json.dumps(messages, indent=2)}")
@@ -187,13 +194,17 @@ def handle_function_call(assistant_response, business_id, sender_id):
     try:
         function_call = assistant_response.function_call
 
+        logging.debug(f"Raw function_call: {function_call}")
+
         # Validate function_call structure
         if not function_call or not hasattr(function_call, "name") or not hasattr(function_call, "arguments"):
+            logging.error("Malformed function_call data. Missing 'name' or 'arguments'.")
             raise ValueError("Malformed function_call data. Missing 'name' or 'arguments'.")
 
         function_name = function_call.name
         arguments = json.loads(function_call.arguments)
 
+        # Log the parsed function name and arguments
         logging.info(f"Handling function call: {function_name} with arguments: {arguments}")
 
         # Add required parameters
@@ -202,19 +213,45 @@ def handle_function_call(assistant_response, business_id, sender_id):
 
         # Dispatch to the appropriate function
         if function_name == "getBusinessServices":
-            response = handle_get_business_services(arguments, business_id, sender_id)
+            return handle_get_business_services(arguments, business_id, sender_id)
         elif function_name == "checkSlot":
-            response = handle_check_slot(arguments, business_id, sender_id)
+            return handle_check_slot(arguments, business_id, sender_id)
         elif function_name == "bookSlot":
-            response = handle_book_slot(arguments, business_id, sender_id)
+            return handle_book_slot(arguments, business_id, sender_id)
+        elif function_name == "updateUserDetails":
+            try:
+                logging.info(f"Updating user details with arguments: {arguments}")
+                update_user_details(sender_id, arguments)
+                logging.info(f"User details updated successfully for sender_id: {sender_id}")
+
+                # Automatically chain to bookSlot if required
+                if all(key in arguments for key in ["serviceID", "preferredDateTime", "durationMinutes"]):
+                    logging.info("Proceeding to bookSlot after updating user details.")
+                    book_slot_args = {
+                        "serviceID": arguments["serviceID"],
+                        "preferredDateTime": arguments["preferredDateTime"],
+                        "durationMinutes": arguments["durationMinutes"],
+                        "sender_id": sender_id,
+                        "business_id": business_id
+                    }
+                    return handle_book_slot(book_slot_args, business_id, sender_id)
+
+                # Send JSON success response for `updateUserDetails`
+                return func.HttpResponse(
+                    json.dumps({"status": "success", "message": "User details updated successfully."}),
+                    status_code=200,
+                    mimetype="application/json"
+                )
+            except Exception as e:
+                logging.error(f"Failed to update user details: {e}")
+                return func.HttpResponse(
+                    json.dumps({"status": "error", "message": f"Failed to update user details: {e}"}),
+                    status_code=500,
+                    mimetype="application/json"
+                )
         else:
+            logging.error(f"Unsupported function name: {function_name}")
             raise ValueError(f"Unsupported function name: {function_name}")
-
-        # Verify the function response message
-        if isinstance(response, dict) and response.get("role") == "function" and "name" not in response:
-            raise ValueError(f"Function response missing 'name': {response}")
-
-        return response
 
     except Exception as e:
         logging.error(f"Error in handle_function_call: {e}")
@@ -223,7 +260,6 @@ def handle_function_call(assistant_response, business_id, sender_id):
             status_code=500,
             mimetype="application/json"
         )
-
 
 
 
@@ -348,34 +384,45 @@ def handle_check_slot(arguments, business_id, sender_id):
     Handles calling the checkSlot function to check slot availability.
     """
 
-    # Extract user details from the query, if available
-    user_query = arguments.get("query", "")
-    if user_query:
-        try:
-            extracted_details = extract_user_details(user_query)
-            if extracted_details:
-                logging.info(f"Extracted user details during checkSlot: {extracted_details}")
-                update_user_details(sender_id, extracted_details)  # Update the database
-        except Exception as e:
-            logging.error(f"Error extracting or updating user details during checkSlot: {e}")
+    # Retrieve existing user details
+    user_info = get_or_create_user(sender_id)
+    logging.info(f"Retrieved user details: {user_info}")
+    logging.info(f"handle_check_slot arguments: {arguments}")
 
+    # Check if AI has provided extracted user details
+    if "function_call" in arguments:
+        logging.info("Processing AI-provided user details.")
+        handle_function_call(arguments["function_call"], business_id, sender_id)
+
+    # Check for missing details
+    missing_details = [
+        field for field in ["name", "phone_number", "email"]
+        if not user_info.get(field)
+    ]
+
+    if missing_details:
+        follow_up_message = (
+            f"The slot at {arguments.get('preferredDateTime')} is available. "
+            f"However, I need your {', '.join(missing_details)} to proceed."
+        )
+        store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+        return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+
+    # Call checkSlot endpoint
     endpoint = function_endpoints.get("checkSlot")
     if not endpoint:
         raise ValueError("Endpoint for checkSlot is not configured.")
 
     logging.info(f"Calling checkSlot with arguments: {arguments}")
-
-    # Build the payload
     payload = {
-        "senderID": sender_id,  # Ensure it matches the expected naming
+        "senderID": sender_id,
         "preferredDateTime": arguments.get("preferredDateTime"),
         "durationMinutes": arguments.get("durationMinutes"),
-        "serviceID": arguments.get("serviceID"),  # Optional if required
+        "serviceID": arguments.get("serviceID"),
         "business_id": business_id
     }
 
     try:
-        # Make the request to the checkSlot endpoint
         response = requests.post(endpoint, json=payload)
         response.raise_for_status()
         result = response.json()
@@ -389,14 +436,10 @@ def handle_check_slot(arguments, business_id, sender_id):
 
     logging.info(f"Response from checkSlot: {result}")
 
-    # Extract availability from the result
-    is_available = result.get("isAvailable")
-    preferred_date_time = arguments.get("preferredDateTime")
-
-    if not is_available:
-        # Slot is unavailable; ask for a new slot
+    # Check slot availability
+    if not result.get("isAvailable"):
         follow_up_message = (
-            f"The slot at {preferred_date_time} is unavailable. "
+            f"The slot at {arguments.get('preferredDateTime')} is unavailable. "
             "Please provide an alternative date and time."
         )
         store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
@@ -404,13 +447,11 @@ def handle_check_slot(arguments, business_id, sender_id):
 
     # Slot is available
     follow_up_message = (
-        f"The slot at {preferred_date_time} is available. "
+        f"The slot at {arguments.get('preferredDateTime')} is available. "
         "Would you like to proceed with confirming this booking?"
     )
     store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
     return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
-
-
 
 
 
@@ -419,46 +460,28 @@ def handle_book_slot(arguments, business_id, sender_id):
     Handles the 'bookSlot' function call to confirm a booking with all necessary details.
     """
     logging.info("Entered handle_book_slot function.")
+    logging.info(f"handle_book_slot arguments: {arguments}")
     logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
 
-    # Extract user details from the query, if available
-    user_query = arguments.get("query", "")
-    if user_query:
-        try:
-            extracted_details = extract_user_details(user_query)
-            if extracted_details:
-                logging.info(f"Extracted user details during checkSlot: {extracted_details}")
-                update_user_details(sender_id, extracted_details)  # Update the database
-        except Exception as e:
-            logging.error(f"Error extracting or updating user details during checkSlot: {e}")
+    # Retrieve or create user record
+    user_info = get_or_create_user(sender_id)
+    logging.debug(f"Retrieved user info: {user_info}")
 
-    # Ensure the endpoint is configured
-    endpoint = function_endpoints.get("bookSlot")
-    if not endpoint:
-        logging.error("Endpoint for bookSlot is not configured.")
-        raise ValueError("Endpoint for bookSlot is not configured.")
+    # Check if AI has provided extracted user details
+    if "function_call" in arguments:
+        logging.info("Processing AI-provided user details.")
+        handle_function_call(arguments["function_call"], business_id, sender_id)
 
-    logging.info("Preparing to book slot.")
+    # Refresh user info after potential update
+    user_info = get_or_create_user(sender_id)
 
-    # Retrieve or create the user record
-    try:
-        user_info = get_or_create_user(sender_id)
-        logging.debug(f"Retrieved or created user info: {user_info}")
-    except Exception as e:
-        logging.error(f"Error retrieving or creating user: {e}")
-        return func.HttpResponse(
-            "Failed to retrieve or create user details. Please try again later.",
-            status_code=500,
-            mimetype="application/json"
-        )
-
-    # Extract user details or fallback to database values
+    # Combine arguments and user info to get complete details
     client_name = arguments.get("clientName") or user_info.get("name")
     phone_number = arguments.get("phoneNumber") or user_info.get("phone_number")
     email_address = arguments.get("emailAddress") or user_info.get("email")
     service_id = arguments.get("serviceID")
     preferred_date_time = arguments.get("preferredDateTime")
-    duration_minutes = arguments.get("duration_minutes")  # Always provided per the simplified approach
+    duration_minutes = arguments.get("durationMinutes")
 
     # Validate preferred_date_time format
     if preferred_date_time:
@@ -471,28 +494,24 @@ def handle_book_slot(arguments, business_id, sender_id):
                 mimetype="text/plain"
             )
 
-    # Check for missing user details and prompt if needed
-    missing_user_details = [key for key in ["name", "phone_number", "email"] if not locals().get(key)]
-    if missing_user_details:
-        follow_up_message = f"Could you please provide your {', '.join(missing_user_details)} to proceed with booking?"
-        logging.info(f"Prompting user for missing details: {missing_user_details}")
+    # Check for missing details
+    missing_details = [
+        key for key in ["name", "phone_number", "email"]
+        if not user_info.get(key)
+    ]
+
+    if missing_details:
+        missing_details_str = ", ".join(missing_details)
+        follow_up_message = f"Could you please provide your {missing_details_str} to proceed with booking?"
+        logging.info(f"Prompting user for missing details: {missing_details}")
         store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
         return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
 
-    # Check slot availability before proceeding with booking
-    logging.info("Calling checkSlot to verify availability.")
-    slot_check_response = handle_check_slot(
-        {
-            "serviceID": service_id,
-            "preferredDateTime": preferred_date_time,
-            "durationMinutes": duration_minutes,
-        },
-        business_id,
-        sender_id,
-    )
-
-    if not isinstance(slot_check_response, func.HttpResponse) or slot_check_response.status_code != 200:
-        return slot_check_response
+    # Ensure the endpoint is configured
+    endpoint = function_endpoints.get("bookSlot")
+    if not endpoint:
+        logging.error("Endpoint for bookSlot is not configured.")
+        raise ValueError("Endpoint for bookSlot is not configured.")
 
     # Proceed with booking if slot is available
     booking_payload = {
@@ -503,7 +522,7 @@ def handle_book_slot(arguments, business_id, sender_id):
         "emailAddress": email_address,
         "serviceID": service_id,
         "preferredDateTime": preferred_date_time,
-        "duration_minutes": duration_minutes,
+        "durationMinutes": duration_minutes,
     }
     try:
         logging.info(f"Booking slot with payload: {booking_payload}")
@@ -523,9 +542,6 @@ def handle_book_slot(arguments, business_id, sender_id):
             status_code=500,
             mimetype="text/plain"
         )
-
-
-
 
 
 def fetch_service_details(business_id, service_id):

@@ -97,11 +97,11 @@ def update_user_details(sender_id, updates):
 # Test function to invoke update_user_details
 def test_update_user_details():
     # Example sender_id and details to update
-    sender_id = "110e8400-e29b-41d4-a716-446655440141"  # Use a valid sender_id
+    sender_id = "110e8400-e29b-41d4-a716-446655440143"  # Use a valid sender_id
     updates = {
-        "name": "Jess",
+        "name": "Boris",
         "phone_number": "0567938479",
-        "email": "j@jess.com"
+        "email": "boris@penaut.com"
     }
 
     try:

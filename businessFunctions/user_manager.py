@@ -77,6 +77,7 @@ def update_user_details(sender_id, updates):
             port=os.getenv("DB_PORT")
         ) as conn:
             with conn.cursor() as cursor:
+                logging.debug(f"Updating user details with: {updates} for sender_id: {sender_id}")
                 cursor.execute(
                     query,
                     (
@@ -86,7 +87,13 @@ def update_user_details(sender_id, updates):
                         sender_id
                     )
                 )
+                if cursor.rowcount == 0:
+                    logging.warning(f"No user found with sender_id: {sender_id}. Update skipped.")
                 conn.commit()
         logging.info(f"Successfully updated user details for sender_id: {sender_id}")
+    except psycopg2.Error as db_error:
+        logging.error(f"Database error during update_user_details: {db_error}")
+        raise  # Ensure error is propagated
     except Exception as e:
-        logging.error(f"Failed to update user details: {e}")
+        logging.error(f"Unexpected error in update_user_details: {e}")
+        raise
