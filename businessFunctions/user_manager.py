@@ -60,14 +60,22 @@ def update_user_details(sender_id, updates):
     Update user details in the database for a given sender_id.
     """
     try:
+        # Extract details from the query if provided
+        if "query" in updates:
+            query = updates["query"]
+            # Extract details using regex or preprocessing
+            extracted_details = extract_user_details(query)
+            updates.update(extracted_details)  # Merge extracted details into updates
+        
         query = """
-            UPDATE public.users
-            SET
-                name = COALESCE(%s, name),
-                phone_number = COALESCE(%s, phone_number),
-                email = COALESCE(%s, email),
-                updated_at = NOW()
-            WHERE sender_id = %s
+            INSERT INTO public.users (sender_id, name, phone_number, email, updated_at)
+            VALUES (%s, COALESCE(%s, NULL), COALESCE(%s, NULL), COALESCE(%s, NULL), NOW())
+            ON CONFLICT (sender_id)
+            DO UPDATE SET
+                name = COALESCE(EXCLUDED.name, users.name),
+                phone_number = COALESCE(EXCLUDED.phone_number, users.phone_number),
+                email = COALESCE(EXCLUDED.email, users.email),
+                updated_at = NOW();
         """
         with psycopg2.connect(
             dbname=os.getenv("DB_NAME"),
@@ -77,23 +85,48 @@ def update_user_details(sender_id, updates):
             port=os.getenv("DB_PORT")
         ) as conn:
             with conn.cursor() as cursor:
-                logging.debug(f"Updating user details with: {updates} for sender_id: {sender_id}")
                 cursor.execute(
                     query,
                     (
+                        sender_id,
                         updates.get("name"),
                         updates.get("phone_number"),
                         updates.get("email"),
-                        sender_id
                     )
                 )
-                if cursor.rowcount == 0:
-                    logging.warning(f"No user found with sender_id: {sender_id}. Update skipped.")
                 conn.commit()
         logging.info(f"Successfully updated user details for sender_id: {sender_id}")
-    except psycopg2.Error as db_error:
-        logging.error(f"Database error during update_user_details: {db_error}")
-        raise  # Ensure error is propagated
     except Exception as e:
-        logging.error(f"Unexpected error in update_user_details: {e}")
+        logging.error(f"Failed to update user details: {e}")
         raise
+
+
+def extract_user_details(user_query):
+    """
+    Extract user details (name, phone number, email) from the query.
+    """
+    import re
+    extracted_details = {}
+
+    try:
+        # Extract phone number
+        phone_match = re.search(r'\b\d{10}\b', user_query)  # Matches 10-digit phone numbers
+        if phone_match:
+            extracted_details["phone_number"] = phone_match.group()
+
+        # Extract name (assumes format "My name is [Name]")
+        name_match = re.search(r"my name is ([A-Z][a-z]+)", user_query, re.IGNORECASE)
+        if name_match:
+            extracted_details["name"] = name_match.group(1)
+
+        # Extract email address
+        email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', user_query)
+        if email_match:
+            extracted_details["email"] = email_match.group()
+
+        logging.debug(f"Extracted details: {extracted_details}")
+    except Exception as e:
+        logging.error(f"Error extracting details: {e}", exc_info=True)
+
+    return extracted_details
+

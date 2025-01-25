@@ -194,6 +194,7 @@ def handle_function_call(assistant_response, business_id, sender_id):
     try:
         function_call = assistant_response.function_call
 
+        # Log the raw function_call for debugging
         logging.debug(f"Raw function_call: {function_call}")
 
         # Validate function_call structure
@@ -213,41 +214,37 @@ def handle_function_call(assistant_response, business_id, sender_id):
 
         # Dispatch to the appropriate function
         if function_name == "getBusinessServices":
+            logging.debug("Dispatching to handle_get_business_services.")
             return handle_get_business_services(arguments, business_id, sender_id)
         elif function_name == "checkSlot":
+            logging.debug("Dispatching to handle_check_slot.")
             return handle_check_slot(arguments, business_id, sender_id)
         elif function_name == "bookSlot":
+            logging.debug("Dispatching to handle_book_slot.")
             return handle_book_slot(arguments, business_id, sender_id)
         elif function_name == "updateUserDetails":
             try:
+                # Update user details
                 logging.info(f"Updating user details with arguments: {arguments}")
                 update_user_details(sender_id, arguments)
                 logging.info(f"User details updated successfully for sender_id: {sender_id}")
 
-                # Automatically chain to bookSlot if required
-                if all(key in arguments for key in ["serviceID", "preferredDateTime", "durationMinutes"]):
-                    logging.info("Proceeding to bookSlot after updating user details.")
-                    book_slot_args = {
-                        "serviceID": arguments["serviceID"],
-                        "preferredDateTime": arguments["preferredDateTime"],
-                        "durationMinutes": arguments["durationMinutes"],
-                        "sender_id": sender_id,
-                        "business_id": business_id
-                    }
-                    return handle_book_slot(book_slot_args, business_id, sender_id)
+                # Continue the booking flow
+                if "preferredDateTime" in arguments and "serviceID" in arguments:
+                    return handle_check_slot(arguments, business_id, sender_id)
 
-                # Send JSON success response for `updateUserDetails`
+                # If no further flow, acknowledge success
                 return func.HttpResponse(
-                    json.dumps({"status": "success", "message": "User details updated successfully."}),
+                    "User details updated successfully.",
                     status_code=200,
-                    mimetype="application/json"
+                    mimetype="text/plain"
                 )
             except Exception as e:
                 logging.error(f"Failed to update user details: {e}")
                 return func.HttpResponse(
-                    json.dumps({"status": "error", "message": f"Failed to update user details: {e}"}),
+                    "Failed to update user details.",
                     status_code=500,
-                    mimetype="application/json"
+                    mimetype="text/plain"
                 )
         else:
             logging.error(f"Unsupported function name: {function_name}")
@@ -260,7 +257,6 @@ def handle_function_call(assistant_response, business_id, sender_id):
             status_code=500,
             mimetype="application/json"
         )
-
 
 
 
