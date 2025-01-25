@@ -55,28 +55,28 @@ def get_or_create_user(sender_id):
 
 
 
-def update_user_details(sender_id, updates):
+def update_user_details(sender_id, userDetails):
     """
-    Update user details in the database for a given sender_id.
+    Update user details in the database for a given sender_id. If the user doesn't exist, create a new record.
     """
     try:
-        # Extract details from the query if provided
-        if "query" in updates:
-            query = updates["query"]
-            # Extract details using regex or preprocessing
-            extracted_details = extract_user_details(query)
-            updates.update(extracted_details)  # Merge extracted details into updates
-        
-        query = """
-            INSERT INTO public.users (sender_id, name, phone_number, email, updated_at)
-            VALUES (%s, COALESCE(%s, NULL), COALESCE(%s, NULL), COALESCE(%s, NULL), NOW())
-            ON CONFLICT (sender_id)
-            DO UPDATE SET
-                name = COALESCE(EXCLUDED.name, users.name),
-                phone_number = COALESCE(EXCLUDED.phone_number, users.phone_number),
-                email = COALESCE(EXCLUDED.email, users.email),
-                updated_at = NOW();
+        # SQL query to update user details
+        update_query = """
+            UPDATE public.users
+            SET
+                name = COALESCE(%s, name),
+                phone_number = COALESCE(%s, phone_number),
+                email = COALESCE(%s, email),
+                updated_at = NOW()
+            WHERE sender_id = %s
         """
+        # SQL query to insert user if not exists
+        insert_query = """
+            INSERT INTO public.users (sender_id, name, phone_number, email, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, NOW(), NOW())
+            ON CONFLICT (sender_id) DO NOTHING
+        """
+
         with psycopg2.connect(
             dbname=os.getenv("DB_NAME"),
             user=os.getenv("DB_USER"),
@@ -85,48 +85,30 @@ def update_user_details(sender_id, updates):
             port=os.getenv("DB_PORT")
         ) as conn:
             with conn.cursor() as cursor:
+                # Attempt to update user details
                 cursor.execute(
-                    query,
+                    update_query,
                     (
-                        sender_id,
-                        updates.get("name"),
-                        updates.get("phone_number"),
-                        updates.get("email"),
+                        userDetails.get("name"),
+                        userDetails.get("phone_number"),
+                        userDetails.get("email"),
+                        sender_id
                     )
                 )
+                # If no rows were updated, insert a new user
+                if cursor.rowcount == 0:
+                    logging.warning(f"No user found with sender_id: {sender_id}. Creating a new user.")
+                    cursor.execute(
+                        insert_query,
+                        (
+                            sender_id,
+                            userDetails.get("name"),
+                            userDetails.get("phone_number"),
+                            userDetails.get("email")
+                        )
+                    )
                 conn.commit()
         logging.info(f"Successfully updated user details for sender_id: {sender_id}")
     except Exception as e:
         logging.error(f"Failed to update user details: {e}")
         raise
-
-
-def extract_user_details(user_query):
-    """
-    Extract user details (name, phone number, email) from the query.
-    """
-    import re
-    extracted_details = {}
-
-    try:
-        # Extract phone number
-        phone_match = re.search(r'\b\d{10}\b', user_query)  # Matches 10-digit phone numbers
-        if phone_match:
-            extracted_details["phone_number"] = phone_match.group()
-
-        # Extract name (assumes format "My name is [Name]")
-        name_match = re.search(r"my name is ([A-Z][a-z]+)", user_query, re.IGNORECASE)
-        if name_match:
-            extracted_details["name"] = name_match.group(1)
-
-        # Extract email address
-        email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', user_query)
-        if email_match:
-            extracted_details["email"] = email_match.group()
-
-        logging.debug(f"Extracted details: {extracted_details}")
-    except Exception as e:
-        logging.error(f"Error extracting details: {e}", exc_info=True)
-
-    return extracted_details
-
