@@ -112,11 +112,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             f"   b. Ask for the date and time of the appointment. "
             f"   c. Call `checkSlot` to verify slot availability using the retrieved duration. "
             f"   d. Confirm the duration with the user only if it is ambiguous or missing. "
-            f"   e. Always extract all user details provided in the query, including name, phone number, and email. "
-            f"      - Return these details as structured JSON in function calls using the format: "
-            f"        {{'function_call': {{'name': 'updateUserDetails', 'arguments': {{'name': 'John', 'phone_number': '9876543210', 'email': 'john.doe@example.com'}}}}}}. "
+            f"   e. You must extract `name`, `phone_number`, and `email` from the user's query and return them in the `function_call.arguments` as structured JSON. For example, if the user says 'My name is John, phone number is 9876543210, email is john.doe@example.com', the response should be: {{'function_call': {{'name': 'updateUserDetails', 'arguments': {{'name': 'John', 'phone_number': '9876543210', 'email': 'john.doe@example.com'}}}}}}. If any details are missing, explicitly ask the user for them."
             f"      - If any details are missing, explicitly ask the user to provide them. "
-            f"      - Use the function name `updateUserDetails` and include all available fields. "
+            f"      - Pass these fields arguments to the function `updateUserDetails` and include all available fields. "
             f"      - Do not respond with natural language if user details are provided. "
             f"   f. Always include extracted details in function calls like `checkSlot`, `bookSlot` and `updateUserDetails`. "
             f"3. If the slot is available, proceed to book: "
@@ -127,6 +125,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             f"   - Do not call `getBusinessServices` again if services have already been fetched in this session. "
             f"6. Clearly communicate progress and outcomes to the user at each step."
         )
+
 
 
 
@@ -200,7 +199,13 @@ def handle_function_call(assistant_response, business_id, sender_id):
             raise ValueError("Malformed function_call data. Missing 'name' or 'arguments'.")
 
         function_name = function_call.name
-        userDetails = json.loads(function_call.arguments)
+
+        # Parse function arguments as JSON
+        try:
+            userDetails = json.loads(function_call.arguments)
+        except (TypeError, json.JSONDecodeError) as e:
+            logging.error(f"Error decoding function_call arguments: {e}")
+            raise ValueError("Invalid function_call.arguments format. Must be JSON.")
 
         # Log the parsed function name and arguments
         logging.info(f"Handling function call: {function_name} with arguments: {userDetails}")
@@ -469,6 +474,74 @@ def handle_get_business_services(arguments, business_id, sender_id):
     services_response = serialize_services_as_text(business_services)
     store_chat_message(business_id, sender_id, "assistant", services_response, "formatted")
     return func.HttpResponse(services_response, status_code=200, mimetype="text/plain")
+
+
+
+def extract_preferred_date_time(content):
+    """
+    Extracts preferred date and time from the content string using a regex pattern.
+
+    Args:
+        content (str): The input string containing the date and time.
+
+    Returns:
+        datetime: Parsed datetime object if found, otherwise None.
+    """
+    date_time_pattern = r"\b(\d{1,2}(st|nd|rd|th)?\s\w+(\s\d{4})?\s\d{1,2}(am|pm)?)\b"
+    date_time_match = re.search(date_time_pattern, content)
+    if date_time_match:
+        return parse_date_time(date_time_match.group(0))
+    return None
+
+
+def extract_service_id(content, business_id):
+    """
+    Extracts service ID by matching a service name in the content string to the services offered by the business.
+
+    Args:
+        content (str): The input string containing the service name.
+        business_id (str): The ID of the business to fetch services from.
+
+    Returns:
+        str: Service ID if found, otherwise None.
+    """
+    try:
+        # Fetch all services for the business
+        business_services = fetch_service_details(business_id, None)  # Fetch all services
+
+        # Extract service name from content
+        service_name = extract_service_name_from_query(content, [service["name"] for service in business_services])
+        if service_name:
+            # Match service name to get its ID
+            for service in business_services:
+                if service["name"] == service_name:
+                    return service["service_id"]
+    except Exception as e:
+        logging.error(f"Failed to extract service ID: {e}")
+    return None
+
+
+
+
+def extract_duration(service_id, business_id):
+    """
+    Extracts the duration in minutes for a specific service ID.
+
+    Args:
+        service_id (str): The ID of the service.
+        business_id (str): The ID of the business.
+
+    Returns:
+        int: Duration in minutes if found, otherwise None.
+    """
+    try:
+        # Fetch service details for the given service ID
+        service_details = fetch_service_details(business_id, service_id)
+        return service_details.get("duration_minutes") if service_details else None
+    except Exception as e:
+        logging.error(f"Failed to extract duration: {e}")
+    return None
+
 
 
 
