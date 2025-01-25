@@ -229,22 +229,30 @@ def handle_function_call(assistant_response, business_id, sender_id):
                 update_user_details(sender_id, arguments)
                 logging.info(f"User details updated successfully for sender_id: {sender_id}")
 
-                # Continue the booking flow
+                # Retrieve context from chat history or arguments
+                chat_history = fetch_chat_history(business_id, sender_id)
+                for message in reversed(chat_history):  # Iterate in reverse to get the latest relevant info
+                    if "preferredDateTime" in message.get("content", ""):
+                        arguments["preferredDateTime"] = extract_preferred_date_time(message["content"])
+                    if "serviceID" in message.get("content", ""):
+                        arguments["serviceID"] = extract_service_id(message["content"])
+
+                # Continue to checkSlot if relevant data is available
                 if "preferredDateTime" in arguments and "serviceID" in arguments:
                     return handle_check_slot(arguments, business_id, sender_id)
 
                 # If no further flow, acknowledge success
                 return func.HttpResponse(
-                    "User details updated successfully.",
+                    json.dumps({"status": "success", "message": "User details updated successfully."}),
                     status_code=200,
-                    mimetype="text/plain"
+                    mimetype="application/json"
                 )
             except Exception as e:
                 logging.error(f"Failed to update user details: {e}")
                 return func.HttpResponse(
-                    "Failed to update user details.",
+                    json.dumps({"status": "error", "message": f"Failed to update user details: {e}"}),
                     status_code=500,
-                    mimetype="text/plain"
+                    mimetype="application/json"
                 )
         else:
             logging.error(f"Unsupported function name: {function_name}")
@@ -538,7 +546,6 @@ def handle_book_slot(arguments, business_id, sender_id):
             status_code=500,
             mimetype="text/plain"
         )
-
 
 def fetch_service_details(business_id, service_id):
     """
