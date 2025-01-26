@@ -930,30 +930,20 @@ def extract_service_name_from_query(user_query, business_services):
 
 # Function call handler
 def handle_function_call(assistant_response, business_id, sender_id):
+    # Log the entry into the function
+    logging.info("Invoking handle_function_call.")
+    logging.debug(f"Function call invoked with: {assistant_response}")
+    logging.debug(f"Business ID: {business_id}, Sender ID: {sender_id}")
+    
     try:
         # Log the full assistant response for debugging
         logging.debug(f"Assistant response: {assistant_response}")
 
-        # Extract the 'content' field from the assistant response
-        raw_content = assistant_response.get("content", None)
-        if not raw_content:
-            logging.error("Assistant response is missing 'content'.")
-            raise ValueError("Assistant response is missing 'content'.")
-
-        # Parse the raw content to extract the function call
-        try:
-            response_json = json.loads(raw_content)  # Parse the JSON string
-            logging.debug(f"Parsed response JSON: {response_json}")  # Log the parsed JSON content
-            
-            function_call = response_json.get("function_call", None)
-            if not function_call:
-                logging.error("No 'function_call' found in assistant response content.")
-                raise ValueError("No 'function_call' found in assistant response content.")
-
-            logging.debug(f"Extracted function_call: {function_call}")  # Log the extracted function call
-        except json.JSONDecodeError as e:
-            logging.error(f"Failed to decode assistant response content: {e}")
-            raise ValueError("Invalid JSON format in assistant response content.")
+        # Extract the function_call directly from the assistant_response
+        function_call = assistant_response.get("function_call", None)
+        if not function_call:
+            logging.error("Assistant response is missing 'function_call'.")
+            raise ValueError("Assistant response is missing 'function_call'.")
 
         # Validate the structure of the function call
         if "name" not in function_call or "arguments" not in function_call:
@@ -976,6 +966,7 @@ def handle_function_call(assistant_response, business_id, sender_id):
         # Add required parameters to the arguments
         arguments["sender_id"] = sender_id
         arguments["business_id"] = business_id
+        logging.info(f"Final arguments for {function_name}: {arguments}")
 
         # Dispatch based on the exact function name
         if function_name == "getBusinessServices":
@@ -1049,8 +1040,6 @@ def handle_function_call(assistant_response, business_id, sender_id):
 
 
 
-
-# Main Azure Function
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("Processing chat request with OpenAI assistant.")
     try:
@@ -1102,23 +1091,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # Fetch chat history for context
         logging.info("Fetching chat history for context.")
         chat_history = fetch_chat_history(business_id, sender_id)
-        messages = []
-        for message in chat_history:
-            if message["role"] == "function" and "name" not in message:
-                logging.error(f"Function message missing 'name': {json.dumps(message, indent=2)}")
-            messages.append({
-                "role": message["role"],
-                "content": message["content"],
-                **({"name": message["name"]} if message["role"] == "function" else {})
-            })
+        messages = [{"role": message["role"], "content": message["content"]} for message in chat_history]
         messages.append({"role": "user", "content": query})
 
-        # Add system instructions with dynamic context
+        # Add system instructions
         system_message = (
             f"You assist with service and booking inquiries for a business. The business ID is {business_id}. "
             f"Follow these steps: "
             f"1. For service inquiries, call `getBusinessServices` to retrieve service details. "
-            f"   - Always include `sender_id` (user ID) and `business_id` (business ID) in function calls. "
+            f"   - Always include `sender_id` (sender ID) and `business_id` (business ID) in function calls. "
             f"   - Do not call `getBusinessServices` again if services have already been fetched. "
             f"2. For booking inquiries: "
             f"   a. Automatically retrieve `durationMinutes` from service details. "
@@ -1136,47 +1117,40 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             f"6. Ensure all interactions are clear and professional, confirming progress at each step, except when providing JSON-only responses for function calls."
         )
         messages.insert(0, {"role": "system", "content": system_message})
-        logging.debug(f"Constructed messages: {json.dumps(messages, indent=2)}")
 
-        # Validate messages before sending to OpenAI
-        for idx, message in enumerate(messages):
-            if message["role"] == "function" and "name" not in message:
-                logging.error(f"Function message at index {idx} is missing 'name': {json.dumps(message, indent=2)}")
-                raise ValueError(f"Function message at index {idx} is missing 'name'.")
-
-        # Call OpenAI assistant
-        logging.debug(f"Messages array being sent to OpenAI:\n{json.dumps(messages, indent=2)}")
-        logging.info(f"Sending request to OpenAI API with model {LLM_MODEL}.")
+        # Send request to OpenAI
+        logging.debug(f"Messages sent to OpenAI: {json.dumps(messages, indent=2)}")
         response = openai.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
-            functions=function_descriptions,
-            function_call="auto",
             temperature=0.7,
-            top_p=0.95,
-            max_tokens=4000,
-            user=ASSISTANT_ID
+            max_tokens=500,
+            user=ASSISTANT_ID,
         )
 
-        # Parse assistant's response
+        # Parse assistant response
         assistant_response = response.choices[0].message
         logging.info(f"Assistant raw response: {assistant_response}")
 
-        # Store and send the assistant's response if content is available
+        # Handle function calls
+        # Immediately handle function calls
+        if hasattr(assistant_response, "function_call") and assistant_response.function_call:
+            logging.info("Function call detected in assistant response. Dispatching to handle_function_call.")
+            function_call = {
+                "name": assistant_response.function_call.name,
+                "arguments": assistant_response.function_call.arguments,
+            }
+            return handle_function_call(function_call, business_id, sender_id)
+
+
+        # Handle content-based responses
         if hasattr(assistant_response, "content") and assistant_response.content:
             logging.info("Storing assistant's response in chat history.")
             store_chat_message(business_id, sender_id, "assistant", assistant_response.content, "formatted")
-            return func.HttpResponse(
-                assistant_response.content, status_code=200, mimetype="text/plain"
-            )
+            return func.HttpResponse(assistant_response.content, status_code=200, mimetype="text/plain")
 
-        # Handle function calls from parsed assistant response
-        if hasattr(assistant_response, "function_call") and assistant_response.function_call:
-            logging.info("Handling function call from assistant response.")
-            return handle_function_call(assistant_response, business_id, sender_id)
-
-        # Default fallback response
-        logging.warning("Assistant response did not contain content or function call.")
+        # Fallback response
+        logging.warning("No valid response content or function call detected in assistant response.")
         return func.HttpResponse(
             "I'm sorry, I couldn't process your request.",
             status_code=500,
@@ -1190,6 +1164,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             status_code=500,
             mimetype="application/json"
         )
+
+
+
+
 
 
 
