@@ -7,16 +7,14 @@ import azure.functions as func
 import psycopg2
 import string
 from rapidfuzz import process
-from fuzzywuzzy import process
 from uuid import uuid4
 from urllib.parse import quote
 from function_descriptions import function_descriptions
 from function_endpoints import function_endpoints
-from user_manager import get_or_create_user, update_user_details
 import re
 from dateutil.parser import parse
 from datetime import datetime
-import logging
+
 
 # Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "MISSING_KEY")
@@ -31,246 +29,672 @@ DB_PORT = os.getenv("DB_PORT", 5432)
 
 if OPENAI_API_KEY == "MISSING_KEY":
     raise ValueError("OPENAI_API_KEY environment variable is not set.")
-
 openai.api_key = OPENAI_API_KEY
 
-import psycopg2
 
-# Main Azure Function
-# Main Azure Function
-def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("Processing chat request with OpenAI assistant.")
+
+# Utility functions
+def extract_user_details(user_query):
+    """
+    Extract user details (name, phone number, email) from the query.
+    """
+    extracted_details = {}
+
     try:
-        # Parse the request body
-        req_body = req.get_json()
-        query = req_body.get("query", "").strip()
-        sender_id = req_body.get("sender_id", "").strip()
-        business_id = req_body.get("business_id", "").strip()
+        # Extract phone number
+        phone_match = re.search(r'\b\d{10}\b', user_query)  # Matches 10-digit phone numbers
+        if phone_match:
+            extracted_details["phone_number"] = phone_match.group()
 
-        # Validate inputs
-        if not query:
-            logging.error("Query is missing in the request.")
-            return func.HttpResponse(
-                json.dumps({"error": "Query is missing."}),
-                status_code=400,
-                mimetype="application/json"
-            )
+        # Extract name (assumes format "My name is [Name]")
+        name_match = re.search(r"my name is ([A-Z][a-z]+)", user_query, re.IGNORECASE)
+        if name_match:
+            extracted_details["name"] = name_match.group(1)
 
-        if not sender_id:
-            logging.error("SenderID is missing in the request.")
-            return func.HttpResponse(
-                json.dumps({"error": "SenderID is required."}),
-                status_code=400,
-                mimetype="application/json"
-            )
+        # Extract email address
+        email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', user_query)
+        if email_match:
+            extracted_details["email"] = email_match.group()
 
-        if not business_id:
-            logging.error("BusinessID is missing in the request.")
-            return func.HttpResponse(
-                json.dumps({"error": "BusinessID is required."}),
-                status_code=400,
-                mimetype="application/json"
-            )
+        logging.debug(f"Extracted details: {extracted_details}")
+    except Exception as e:
+        logging.error(f"Error extracting details: {e}", exc_info=True)
 
-        # Log received inputs
-        logging.info(f"Query: {query}, SenderID: {sender_id}, BusinessID: {business_id}")
+    return extracted_details
 
-        # Preprocess the query to detect intent and extract details
-        query_analysis = preprocess_query(query)
-        intent = query_analysis.get("intent")
-        extracted_details = query_analysis.get("details", {})
 
-        logging.info(f"Preprocessed query - Intent: {intent}, Details: {extracted_details}")
 
-        # Store the user's query
-        logging.info("Storing user's query in chat history.")
-        store_chat_message(business_id, sender_id, "user", query, "formatted")
-
-        # Fetch chat history for context
-        logging.info("Fetching chat history for context.")
-        chat_history = fetch_chat_history(business_id, sender_id)
-        messages = []
-        for message in chat_history:
-            if message["role"] == "function" and "name" not in message:
-                logging.error(f"Function message missing 'name': {json.dumps(message, indent=2)}")
-            messages.append({
-                "role": message["role"],
-                "content": message["content"],
-                **({"name": message["name"]} if message["role"] == "function" else {})
-            })
-        messages.append({"role": "user", "content": query})
-
-        # Add system instructions with dynamic context
-        system_message = (
-            f"You assist with service and booking inquiries for a business. The business ID is {business_id}. "
-            f"Follow these steps: "
-            f"1. For service inquiries, use `getBusinessServices` to fetch and present the list of services. "
-            f"   - Call `getBusinessServices` only once per conversation unless explicitly requested. "
-            f"   - Always include `sender_id` (user ID) and `business_id` (business ID) in function calls. "
-            f"2. For booking inquiries: "
-            f"   a. Automatically retrieve `duration_minutes` from service details. "
-            f"   b. Ask for the date and time of the appointment. "
-            f"   c. Call `checkSlot` to verify slot availability using the retrieved duration. "
-            f"   d. Confirm the duration with the user only if it is ambiguous or missing. "
-            f"   e. You must extract `name`, `phone_number`, and `email` from the user's query and return them in the `function_call.arguments` as structured JSON. For example, if the user says 'My name is John, phone number is 9876543210, email is john.doe@example.com', the response should be: {{'function_call': {{'name': 'updateUserDetails', 'arguments': {{'name': 'John', 'phone_number': '9876543210', 'email': 'john.doe@example.com'}}}}}}. If any details are missing, explicitly ask the user for them."
-            f"      - If any details are missing, explicitly ask the user to provide them. "
-            f"      - Pass these fields arguments to the function `updateUserDetails` and include all available fields. "
-            f"      - Do not respond with natural language if user details are provided. "
-            f"   f. Always include extracted details in function calls like `checkSlot`, `bookSlot` and `updateUserDetails`. "
-            f"3. If the slot is available, proceed to book: "
-            f"   - Collect client details (name, phone number, email) after slot availability is confirmed. "
-            f"   - Use `bookSlot` only after all details are confirmed. "
-            f"4. Avoid asking for user details again if they are already stored. "
-            f"5. Avoid redundant function calls: "
-            f"   - Do not call `getBusinessServices` again if services have already been fetched in this session. "
-            f"6. Clearly communicate progress and outcomes to the user at each step."
+def fetch_chat_history(business_id, sender_id, limit=CHAT_HISTORY_LIMIT):
+    """
+    Fetch chat history for context.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
         )
-
-
-
-
-
-        messages.insert(0, {"role": "system", "content": system_message})
-        logging.debug(f"Constructed messages: {json.dumps(messages, indent=2)}")
-
-        # Validate messages before sending to OpenAI
-        for idx, message in enumerate(messages):
-            if message["role"] == "function" and "name" not in message:
-                logging.error(f"Function message at index {idx} is missing 'name': {json.dumps(message, indent=2)}")
-                raise ValueError(f"Function message at index {idx} is missing 'name'.")
-
-        # Call OpenAI assistant
-        logging.debug(f"Messages array being sent to OpenAI:\n{json.dumps(messages, indent=2)}")
-        logging.info(f"Sending request to OpenAI API with model {LLM_MODEL}.")
-        response = openai.chat.completions.create(
-            model=LLM_MODEL,
-            messages=messages,
-            functions=function_descriptions,
-            function_call="auto",
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=800,
-            user=ASSISTANT_ID
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT role, content, name
+            FROM chathistory
+            WHERE business_id = %s AND sender_id = %s
+            ORDER BY timestamp ASC
+            LIMIT %s
+            """,
+            (business_id, sender_id, limit)
         )
+        rows = cursor.fetchall()
+        return [
+            {"role": row[0], "content": row[1], "name": row[2]} if row[0] == "function" else {"role": row[0], "content": row[1]}
+            for row in rows
+        ]
+    except Exception as e:
+        logging.error(f"Error fetching chat history: {e}")
+        return []
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
-        # Parse assistant's response
-        assistant_response = response.choices[0].message
-        logging.info(f"Assistant raw response: {assistant_response}")
 
-        # Store and send the assistant's response if content is available
-        if assistant_response.content:
-            logging.info("Storing assistant's response in chat history.")
-            store_chat_message(business_id, sender_id, "assistant", assistant_response.content, "formatted")
-            return func.HttpResponse(
-                assistant_response.content, status_code=200, mimetype="text/plain"
-            )
 
-        # Immediately handle function calls
-        if assistant_response.function_call:
-            logging.info("Handling function call from assistant response.")
-            return handle_function_call(assistant_response, business_id, sender_id)
 
-        # Default fallback response
-        logging.warning("Assistant response did not contain content or function call.")
+
+def store_chat_message(business_id, sender_id, role, content, message_type="formatted", name=None):
+    """
+    Store chat messages in the `chathistory` table.
+    """
+    try:
+        logging.info(f"Storing message: role={role}, name={name}, content={content[:100]}")  # Log truncated content
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO chathistory (business_id, sender_id, role, content, message_type, name)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (business_id, sender_id, role, content, message_type, name)
+        )
+        conn.commit()
+        logging.info("Message stored successfully.")
+    except psycopg2.Error as e:
+        logging.error(f"Database error while storing chat message: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error storing chat message: {e}")
+    finally:
+        try:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+        except Exception as cleanup_error:
+            logging.error(f"Error during connection cleanup: {cleanup_error}")
+
+
+def preprocess_query(query, business_services=None):
+    """
+    Detects user intent and extracts relevant details from the query.
+
+    Args:
+        query (str): User's input query.
+        business_services (list): A list of service names relevant to the business.
+
+    Returns:
+        dict: Contains detected intent and extracted details.
+    """
+    # Define intent keywords and patterns
+    slot_keywords = ["book", "schedule", "reserve", "appointment"]
+    pricing_keywords = ["how much", "price", "cost"]
+    user_detail_keywords = ["name", "phone", "email", "contact", "reach me"]
+    date_time_pattern = r"\b(\d{1,2}(st|nd|rd|th)?\s\w+(\s\d{4})?\s?\d{1,2}(am|pm)?)\b"
+
+    # Initialize intent and details
+    intent = "general"
+    details = {}
+
+    query_lower = query.lower()
+
+    # Debugging: Log the query
+    logging.debug(f"Processing query: {query}")
+
+    # Detect intents
+    if any(keyword in query_lower for keyword in slot_keywords):
+        intent = "booking"
+    elif any(keyword in query_lower for keyword in pricing_keywords):
+        intent = "pricing"
+    elif any(keyword in query_lower for keyword in user_detail_keywords):
+        intent = "user_details"
+
+    # Process service name if the list is available
+    if business_services:
+        matched_service = process.extractOne(query_lower, business_services, scorer=process.fuzz.partial_ratio)
+        if matched_service and matched_service[1] > 70:  # Confidence threshold
+            details["service_name"] = matched_service[0]
+        elif intent == "pricing":
+            logging.warning("Pricing intent detected but no matching service name found.")
+            details["fallback_message"] = "I couldn't find the service you're asking about. Can you clarify?"
+    elif intent in ["pricing", "booking"]:
+        logging.warning("No business services provided for service name matching.")
+
+    # Extract date and time
+    date_time_match = re.search(date_time_pattern, query)
+    if date_time_match:
+        details["preferredDateTime"] = parse_date_time(date_time_match.group(0))
+
+    # Log the results
+    logging.info(f"Preprocessed query: Intent: {intent}, Details: {details}")
+
+    return {"intent": intent, "details": details}
+
+
+def parse_date_time(date_string):
+    """
+    Parses a date string into a datetime object.
+    """
+    try:
+        logging.info(f"Parsing date string: {date_string}")
+        return parse(date_string, fuzzy=True)  # Fuzzy parsing allows flexibility
+    except ValueError as e:
+        logging.error(f"Error parsing date: {e}")
+        return None
+
+
+
+
+
+
+# Service related helper functions
+def serialize_services_as_text(business_services):
+    """
+    Serializes a list of business services into a human-readable text format.
+    """
+    if not business_services:
+        return "No services are currently available."
+
+    lines = []
+    for service in business_services:
+        # Ensure all required fields are present and handle missing values gracefully
+        name = service.get('name', 'Unknown Service')
+        price = service.get('price', 'N/A')
+        duration = service.get('duration_minutes', 'N/A')
+
+        # Format the line with service details
+        line = f"- {name} (Price: ${price}, Duration: {duration} mins)"
+        lines.append(line)
+
+    return "Here are the services we offer:\n" + "\n".join(lines)
+
+
+
+def serialize_service_details_as_text(service_details):
+    """
+    Serializes a single service's details into a human-readable text format.
+    """
+    return (
+        f"Service: {service_details['name']}\n"
+        f"Price: ${service_details['price']}\n"
+        f"Duration: {service_details['duration_minutes']} mins\n"
+    )
+
+
+def extract_service_id(content, business_id):
+    """
+    Extracts service ID by matching a service name in the content string to the services offered by the business.
+
+    Args:
+        content (str): The input string containing the service name.
+        business_id (str): The ID of the business to fetch services from.
+
+    Returns:
+        str: Service ID if found, otherwise None.
+    """
+    try:
+        # Fetch all services for the business
+        business_services = fetch_service_details(business_id, None)  # Fetch all services
+
+        # Extract service name from content
+        service_name = extract_service_name_from_query(content, [service["name"] for service in business_services])
+        if service_name:
+            # Match service name to get its ID
+            for service in business_services:
+                if service["name"] == service_name:
+                    return service["service_id"]
+    except Exception as e:
+        logging.error(f"Failed to extract service ID: {e}")
+    return None
+
+
+
+
+def extract_duration(service_id, business_id):
+    """
+    Extracts the duration in minutes for a specific service ID.
+
+    Args:
+        service_id (str): The ID of the service.
+        business_id (str): The ID of the business.
+
+    Returns:
+        int: Duration in minutes if found, otherwise None.
+    """
+    try:
+        # Fetch service details for the given service ID
+        service_details = fetch_service_details(business_id, service_id)
+        return service_details.get("duration_minutes") if service_details else None
+    except Exception as e:
+        logging.error(f"Failed to extract duration: {e}")
+    return None
+
+
+# Database helper functions
+def get_or_create_user(sender_id):
+    """
+    Retrieve or create a user record in the database.
+
+    Args:
+        sender_id (str): The sender ID of the user.
+
+    Returns:
+        dict: A dictionary of user details (e.g., {"name": "John", "email": "john@example.com"}).
+    """
+    try:
+        query = "SELECT sender_id, name, phone_number, email FROM public.users WHERE sender_id = %s"
+        with psycopg2.connect(
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT")
+        ) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query, (sender_id,))
+                result = cursor.fetchone()
+                if result:
+                    return {
+                        "sender_id": result[0],
+                        "name": result[1],
+                        "phone_number": result[2],
+                        "email": result[3]
+                    }
+
+                # Create a new user if none exists
+                insert_query = """
+                    INSERT INTO public.users (sender_id, created_at, updated_at)
+                    VALUES (%s, NOW(), NOW())
+                """
+                cursor.execute(insert_query, (sender_id,))
+                conn.commit()
+                logging.info(f"New user created with sender_id: {sender_id}")
+                return {"sender_id": sender_id, "name": None, "phone_number": None, "email": None}
+    except Exception as e:
+        logging.error(f"Error in get_or_create_user: {e}")
+        return None
+
+
+
+
+def update_user_details(sender_id, userDetails):
+    """
+    Update user details in the database for a given sender_id. If the user doesn't exist, create a new record.
+    """
+    try:
+        # Log input details
+        logging.info(f"Updating user details for sender_id: {sender_id}, Details: {userDetails}")
+
+        # Skip if no valid details are provided
+        if not any([userDetails.get("name"), userDetails.get("phone_number"), userDetails.get("email")]):
+            logging.warning(f"No valid user details provided for sender_id: {sender_id}. Skipping update.")
+            return
+
+        update_query = """
+            UPDATE public.users
+            SET
+                name = COALESCE(%s, name),
+                phone_number = COALESCE(%s, phone_number),
+                email = COALESCE(%s, email),
+                updated_at = NOW()
+            WHERE sender_id = %s
+        """
+        insert_query = """
+            INSERT INTO public.users (sender_id, name, phone_number, email, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, NOW(), NOW())
+            ON CONFLICT (sender_id) DO NOTHING
+        """
+
+        with psycopg2.connect(
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT")
+        ) as conn:
+            with conn.cursor() as cursor:
+                # Attempt to update user details
+                cursor.execute(
+                    update_query,
+                    (
+                        userDetails.get("name"),
+                        userDetails.get("phone_number"),
+                        userDetails.get("email"),
+                        sender_id
+                    )
+                )
+                logging.info(f"Update query executed. Rows affected: {cursor.rowcount}")
+
+                # If no rows were updated, insert a new user
+                if cursor.rowcount == 0:
+                    logging.warning(f"No user found with sender_id: {sender_id}. Creating a new user.")
+                    cursor.execute(
+                        insert_query,
+                        (
+                            sender_id,
+                            userDetails.get("name"),
+                            userDetails.get("phone_number"),
+                            userDetails.get("email")
+                        )
+                    )
+                    logging.info(f"Insert query executed. New user created with sender_id: {sender_id}")
+
+                conn.commit()
+        logging.info(f"Successfully updated user details for sender_id: {sender_id}")
+    except Exception as e:
+        logging.error(f"Failed to update user details: {e}")
+        raise
+
+
+
+
+def get_user_details(sender_id):
+    """
+    Retrieve user details for the given `sender_id` from the `users` table.
+    Returns a dictionary with the user details or an empty dictionary if no details are found.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT name, phone_number, email
+            FROM users
+            WHERE sender_id = %s;
+            """,
+            (sender_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return {
+                "name": row[0],
+                "phone_number": row[1],
+                "email": row[2]
+            }
+        else:
+            return {}
+    except psycopg2.Error as e:
+        print(f"Database error: {e}")
+        return {}
+
+
+
+def check_missing_user_details(sender_id):
+    """
+    Check the `users` table for missing details for the given `sender_id`.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT name, phone_number, email FROM users WHERE sender_id = %s;
+            """,
+            (sender_id,)
+        )
+        user = cursor.fetchone()
+        if not user:
+            return ["name", "phone_number", "email"]  # All details are missing
+
+        missing = []
+        if not user[0]:
+            missing.append("name")
+        if not user[1]:
+            missing.append("phone_number")
+        if not user[2]:
+            missing.append("email")
+        return missing
+
+    except Exception as e:
+        logging.error(f"Error checking missing user details: {e}")
+        return ["name", "phone_number", "email"]
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+
+
+def create_booking(sender_id, business_id, service_name=None, preferred_date_time=None):
+    """
+    Create a new booking entry in the `bookings` table.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO bookings (sender_id, business_id, service_name, preferred_date_time)
+            VALUES (%s, %s, %s, %s)
+            RETURNING booking_id;
+            """,
+            (sender_id, business_id, service_name, preferred_date_time)
+        )
+        booking_id = cursor.fetchone()[0]
+        conn.commit()
+        logging.info(f"Booking created successfully with ID: {booking_id}")
+        return booking_id
+    except psycopg2.Error as db_error:
+        logging.error(f"Database error creating booking: {db_error}")
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error creating booking: {e}")
+        raise
+    finally:
+        try:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+        except Exception as cleanup_error:
+            logging.error(f"Error during connection cleanup: {cleanup_error}")
+
+def update_booking(booking_id, updates):
+    """
+    Update booking details in the `bookings` table.
+    """
+    try:
+        # Log input details
+        logging.info(f"Updating booking with ID: {booking_id}, Updates: {updates}")
+
+        # Prepare database connection
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
+        cursor = conn.cursor()
+
+        # Build the SQL query dynamically
+        set_clause = ", ".join([f"{key} = %s" for key in updates.keys()])
+        query = f"""
+            UPDATE bookings
+            SET {set_clause}, updated_at = NOW()
+            WHERE booking_id = %s;
+        """
+        logging.debug(f"Generated query: {query}")
+
+        # Execute the query
+        cursor.execute(query, list(updates.values()) + [booking_id])
+        conn.commit()
+
+        logging.info(f"Booking with ID: {booking_id} successfully updated.")
+
+    except psycopg2.Error as e:
+        logging.error(f"Database error while updating booking: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error while updating booking: {e}")
+    finally:
+        try:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+        except Exception as cleanup_error:
+            logging.error(f"Error during connection cleanup: {cleanup_error}")
+
+
+
+
+def get_active_booking(sender_id, business_id):
+    """
+    Retrieve an active booking for the given sender_id and business_id.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT booking_id, sender_id, business_id, service_name, 
+                   preferred_date_time, confirmed, created_at, updated_at
+            FROM bookings
+            WHERE sender_id = %s AND business_id = %s AND confirmed = FALSE
+            ORDER BY created_at DESC LIMIT 1;
+            """,
+            (sender_id, business_id)
+        )
+        booking = cursor.fetchone()
+        if booking:
+            logging.info(f"Active booking found: {booking}")
+            return {
+                "booking_id": booking[0],
+                "sender_id": booking[1],
+                "business_id": booking[2],
+                "service_name": booking[3],
+                "preferred_date_time": booking[4],
+                "confirmed": booking[5],
+                "created_at": booking[6],
+                "updated_at": booking[7],
+            }
+        else:
+            logging.info("No active booking found.")
+            return None
+    except psycopg2.Error as db_error:
+        logging.error(f"Database error retrieving active booking: {db_error}")
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error retrieving active booking: {e}")
+        raise
+    finally:
+        try:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+        except Exception as cleanup_error:
+            logging.error(f"Error during connection cleanup: {cleanup_error}")
+
+
+# Endpoint handlers
+
+def handle_get_business_services(arguments, business_id, sender_id):
+    """
+    Handles the 'getBusinessServices' function call, fetching details for all or specific services.
+    """
+    logging.info("Entered handle_get_business_services function.")
+    logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
+
+    # Ensure the endpoint is configured
+    endpoint = function_endpoints.get("getBusinessServices")
+    if not endpoint:
+        logging.error("Endpoint for getBusinessServices is not configured.")
+        raise ValueError("Endpoint for getBusinessServices is not configured.")
+
+    # Fetch all available business services early
+    try:
+        logging.info("Fetching business services from the endpoint.")
+        response = requests.post(
+            endpoint,
+            json={
+                "business_id": business_id,
+                "sender_id": sender_id,
+                "fields": ["service_id", "name", "price", "duration_minutes"]
+            }
+        )
+        response.raise_for_status()
+        business_services = response.json().get("services", [])
+
+        if not business_services:
+            logging.warning("No business services found for this business.")
+            follow_up_message = "I couldn't find any services listed for this business. Please try again later."
+            store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
+            return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+        logging.debug(f"Fetched business services: {business_services}")
+
+    except requests.RequestException as e:
+        logging.error(f"Error fetching business services: {e}")
         return func.HttpResponse(
-            "I'm sorry, I couldn't process your request.",
+            "Failed to fetch business services. Please try again later.",
             status_code=500,
             mimetype="text/plain"
         )
 
-    except Exception as e:
-        logging.error(f"Unexpected error: {e}", exc_info=True)
-        return func.HttpResponse(
-            json.dumps({"error": "Internal Server Error", "details": str(e)}),
-            status_code=500,
-            mimetype="application/json"
-        )
+    # Extract and preprocess user query
+    user_query = arguments.get("query", "").strip().lower()
+    if not user_query:
+        logging.info("User query is empty. Returning all business services.")
+        services_response = serialize_services_as_text(business_services)
+        store_chat_message(business_id, sender_id, "assistant", services_response, "formatted")
+        return func.HttpResponse(services_response, status_code=200, mimetype="text/plain")
 
-def handle_function_call(assistant_response, business_id, sender_id):
-    try:
-        function_call = assistant_response.function_call
+    logging.info(f"Processing user query: {user_query}")
 
-        # Log the raw function_call for debugging
-        logging.debug(f"Raw function_call: {function_call}")
+    # Pass available business services to preprocess_query
+    available_service_names = [service["name"] for service in business_services]
+    preprocessed_query = preprocess_query(user_query, available_service_names)
+    intent = preprocessed_query["intent"]
+    details = preprocessed_query["details"]
 
-        # Validate function_call structure
-        if not function_call or not hasattr(function_call, "name") or not hasattr(function_call, "arguments"):
-            logging.error("Malformed function_call data. Missing 'name' or 'arguments'.")
-            raise ValueError("Malformed function_call data. Missing 'name' or 'arguments'.")
+    # Handle pricing intent with missing service name
+    if intent == "pricing" and "service_name" not in details:
+        logging.warning("Pricing intent detected but no service name matched.")
+        fallback_message = details.get("fallback_message", "I couldn't understand your request. Please try again.")
+        store_chat_message(business_id, sender_id, "assistant", fallback_message, "formatted")
+        return func.HttpResponse(fallback_message, status_code=200, mimetype="text/plain")
 
-        function_name = function_call.name
+    # Handle cases where a specific service is matched
+    if "service_name" in details:
+        matched_service_name = details["service_name"].lower()
+        service_details = next((s for s in business_services if s["name"].lower() == matched_service_name), None)
 
-        # Parse function arguments as JSON
-        try:
-            userDetails = json.loads(function_call.arguments)
-        except (TypeError, json.JSONDecodeError) as e:
-            logging.error(f"Error decoding function_call arguments: {e}")
-            raise ValueError("Invalid function_call.arguments format. Must be JSON.")
+        if service_details:
+            service_message = serialize_service_details_as_text(service_details)
+            store_chat_message(business_id, sender_id, "assistant", service_message, "formatted")
+            return func.HttpResponse(service_message, status_code=200, mimetype="text/plain")
 
-        # Log the parsed function name and arguments
-        logging.info(f"Handling function call: {function_name} with arguments: {userDetails}")
-
-        # Add required parameters
-        userDetails["sender_id"] = sender_id
-        userDetails["business_id"] = business_id
-
-        # Dispatch to the appropriate function
-        if function_name == "getBusinessServices":
-            logging.debug("Dispatching to handle_get_business_services.")
-            return handle_get_business_services(userDetails, business_id, sender_id)
-        elif function_name == "checkSlot":
-            logging.debug("Dispatching to handle_check_slot.")
-            return handle_check_slot(userDetails, business_id, sender_id)
-        elif function_name == "bookSlot":
-            logging.debug("Dispatching to handle_book_slot.")
-            return handle_book_slot(userDetails, business_id, sender_id)
-        elif function_name == "updateUserDetails":
-            try:
-                # Update user details
-                logging.info(f"Updating user details with arguments: {userDetails}")
-                update_user_details(sender_id, userDetails)
-                logging.info(f"User details updated successfully for sender_id: {sender_id}")
-
-                # Check context to decide next step
-                chat_history = fetch_chat_history(business_id, sender_id)
-                for message in reversed(chat_history):  # Iterate in reverse to find booking-related info
-                    if "preferredDateTime" in message.get("content", ""):
-                        userDetails["preferredDateTime"] = extract_preferred_date_time(message["content"])
-                    if "serviceID" in message.get("content", ""):
-                        userDetails["serviceID"] = extract_service_id(message["content"])
-                    if "durationMinutes" in message.get("content", ""):
-                        userDetails["durationMinutes"] = extract_duration(message["content"])
-
-                # Proceed to checkSlot if booking context exists
-                if "preferredDateTime" in userDetails and "serviceID" in userDetails:
-                    logging.info("Detected booking intent. Proceeding to checkSlot.")
-                    return handle_check_slot(userDetails, business_id, sender_id)
-
-                # End flow if not booking-related
-                logging.info("No booking context detected. Ending flow after updating user details.")
-                return func.HttpResponse(
-                    json.dumps({"status": "success", "message": "User details updated successfully."}),
-                    status_code=200,
-                    mimetype="application/json"
-                )
-            except Exception as e:
-                logging.error(f"Failed to update user details: {e}")
-                return func.HttpResponse(
-                    json.dumps({"status": "error", "message": f"Failed to update user details: {e}"}),
-                    status_code=500,
-                    mimetype="application/json"
-                )
-        else:
-            logging.error(f"Unsupported function name: {function_name}")
-            raise ValueError(f"Unsupported function name: {function_name}")
-
-    except Exception as e:
-        logging.error(f"Error in handle_function_call: {e}")
-        return func.HttpResponse(
-            json.dumps({"error": "Function call failed", "details": str(e)}),
-            status_code=500,
-            mimetype="application/json"
-        )
+    # If no specific service is matched, return all services as a human-readable list
+    services_response = serialize_services_as_text(business_services)
+    store_chat_message(business_id, sender_id, "assistant", services_response, "formatted")
+    return func.HttpResponse(services_response, status_code=200, mimetype="text/plain")
 
 
 
@@ -395,85 +819,7 @@ def handle_book_slot(arguments, business_id, sender_id):
 
 
 
-def handle_get_business_services(arguments, business_id, sender_id):
-    """
-    Handles the 'getBusinessServices' function call, fetching details for all or specific services.
-    """
-    logging.info("Entered handle_get_business_services function.")
-    logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
 
-    # Ensure the endpoint is configured
-    endpoint = function_endpoints.get("getBusinessServices")
-    if not endpoint:
-        logging.error("Endpoint for getBusinessServices is not configured.")
-        raise ValueError("Endpoint for getBusinessServices is not configured.")
-
-    # Fetch all available business services early
-    try:
-        logging.info("Fetching business services from the endpoint.")
-        response = requests.post(
-            endpoint,
-            json={
-                "business_id": business_id,
-                "sender_id": sender_id,
-                "fields": ["service_id", "name", "price", "duration_minutes"]
-            }
-        )
-        response.raise_for_status()
-        business_services = response.json().get("services", [])
-
-        if not business_services:
-            logging.warning("No business services found for this business.")
-            follow_up_message = "I couldn't find any services listed for this business. Please try again later."
-            store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-            return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
-        logging.debug(f"Fetched business services: {business_services}")
-
-    except requests.RequestException as e:
-        logging.error(f"Error fetching business services: {e}")
-        return func.HttpResponse(
-            "Failed to fetch business services. Please try again later.",
-            status_code=500,
-            mimetype="text/plain"
-        )
-
-    # Extract and preprocess user query
-    user_query = arguments.get("query", "").strip().lower()
-    if not user_query:
-        logging.info("User query is empty. Returning all business services.")
-        services_response = serialize_services_as_text(business_services)
-        store_chat_message(business_id, sender_id, "assistant", services_response, "formatted")
-        return func.HttpResponse(services_response, status_code=200, mimetype="text/plain")
-
-    logging.info(f"Processing user query: {user_query}")
-
-    # Pass available business services to preprocess_query
-    available_service_names = [service["name"] for service in business_services]
-    preprocessed_query = preprocess_query(user_query, available_service_names)
-    intent = preprocessed_query["intent"]
-    details = preprocessed_query["details"]
-
-    # Handle pricing intent with missing service name
-    if intent == "pricing" and "service_name" not in details:
-        logging.warning("Pricing intent detected but no service name matched.")
-        fallback_message = details.get("fallback_message", "I couldn't understand your request. Please try again.")
-        store_chat_message(business_id, sender_id, "assistant", fallback_message, "formatted")
-        return func.HttpResponse(fallback_message, status_code=200, mimetype="text/plain")
-
-    # Handle cases where a specific service is matched
-    if "service_name" in details:
-        matched_service_name = details["service_name"].lower()
-        service_details = next((s for s in business_services if s["name"].lower() == matched_service_name), None)
-
-        if service_details:
-            service_message = serialize_service_details_as_text(service_details)
-            store_chat_message(business_id, sender_id, "assistant", service_message, "formatted")
-            return func.HttpResponse(service_message, status_code=200, mimetype="text/plain")
-
-    # If no specific service is matched, return all services as a human-readable list
-    services_response = serialize_services_as_text(business_services)
-    store_chat_message(business_id, sender_id, "assistant", services_response, "formatted")
-    return func.HttpResponse(services_response, status_code=200, mimetype="text/plain")
 
 
 
@@ -494,88 +840,8 @@ def extract_preferred_date_time(content):
     return None
 
 
-def extract_service_id(content, business_id):
-    """
-    Extracts service ID by matching a service name in the content string to the services offered by the business.
-
-    Args:
-        content (str): The input string containing the service name.
-        business_id (str): The ID of the business to fetch services from.
-
-    Returns:
-        str: Service ID if found, otherwise None.
-    """
-    try:
-        # Fetch all services for the business
-        business_services = fetch_service_details(business_id, None)  # Fetch all services
-
-        # Extract service name from content
-        service_name = extract_service_name_from_query(content, [service["name"] for service in business_services])
-        if service_name:
-            # Match service name to get its ID
-            for service in business_services:
-                if service["name"] == service_name:
-                    return service["service_id"]
-    except Exception as e:
-        logging.error(f"Failed to extract service ID: {e}")
-    return None
 
 
-
-
-def extract_duration(service_id, business_id):
-    """
-    Extracts the duration in minutes for a specific service ID.
-
-    Args:
-        service_id (str): The ID of the service.
-        business_id (str): The ID of the business.
-
-    Returns:
-        int: Duration in minutes if found, otherwise None.
-    """
-    try:
-        # Fetch service details for the given service ID
-        service_details = fetch_service_details(business_id, service_id)
-        return service_details.get("duration_minutes") if service_details else None
-    except Exception as e:
-        logging.error(f"Failed to extract duration: {e}")
-    return None
-
-
-
-
-def serialize_services_as_text(business_services):
-    """
-    Serializes a list of business services into a human-readable text format.
-    """
-    if not business_services:
-        return "No services are currently available."
-
-    lines = []
-    for service in business_services:
-        # Ensure all required fields are present and handle missing values gracefully
-        name = service.get('name', 'Unknown Service')
-        price = service.get('price', 'N/A')
-        duration = service.get('duration_minutes', 'N/A')
-
-        # Format the line with service details
-        line = f"- {name} (Price: ${price}, Duration: {duration} mins)"
-        lines.append(line)
-
-    return "Here are the services we offer:\n" + "\n".join(lines)
-
-
-
-def serialize_service_details_as_text(service_details):
-    """
-    Serializes a single service's details into a human-readable text format.
-    """
-    return (
-        f"Service: {service_details['name']}\n"
-        f"Price: ${service_details['price']}\n"
-        f"Duration: {service_details['duration_minutes']} mins\n"
-    )
 
 
 def fetch_service_details(business_id, service_id):
@@ -623,72 +889,7 @@ def fetch_service_details(business_id, service_id):
 
 
 
-def preprocess_query(query, business_services=None):
-    """
-    Detects user intent and extracts relevant details from the query.
 
-    Args:
-        query (str): User's input query.
-        business_services (list): A list of service names relevant to the business.
-
-    Returns:
-        dict: Contains detected intent and extracted details.
-    """
-    # Define intent keywords and patterns
-    slot_keywords = ["book", "schedule", "reserve", "appointment"]
-    pricing_keywords = ["how much", "price", "cost"]
-    user_detail_keywords = ["name", "phone", "email", "contact", "reach me"]
-    date_time_pattern = r"\b(\d{1,2}(st|nd|rd|th)?\s\w+(\s\d{4})?\s?\d{1,2}(am|pm)?)\b"
-
-    # Initialize intent and details
-    intent = "general"
-    details = {}
-
-    query_lower = query.lower()
-
-    # Debugging: Log the query
-    logging.debug(f"Processing query: {query}")
-
-    # Detect intents
-    if any(keyword in query_lower for keyword in slot_keywords):
-        intent = "booking"
-    elif any(keyword in query_lower for keyword in pricing_keywords):
-        intent = "pricing"
-    elif any(keyword in query_lower for keyword in user_detail_keywords):
-        intent = "user_details"
-
-    # Process service name if the list is available
-    if business_services:
-        matched_service = process.extractOne(query_lower, business_services, scorer=process.fuzz.partial_ratio)
-        if matched_service and matched_service[1] > 70:  # Confidence threshold
-            details["service_name"] = matched_service[0]
-        elif intent == "pricing":
-            logging.warning("Pricing intent detected but no matching service name found.")
-            details["fallback_message"] = "I couldn't find the service you're asking about. Can you clarify?"
-    elif intent in ["pricing", "booking"]:
-        logging.warning("No business services provided for service name matching.")
-
-    # Extract date and time
-    date_time_match = re.search(date_time_pattern, query)
-    if date_time_match:
-        details["preferredDateTime"] = parse_date_time(date_time_match.group(0))
-
-    # Log the results
-    logging.info(f"Preprocessed query: Intent: {intent}, Details: {details}")
-
-    return {"intent": intent, "details": details}
-
-
-def parse_date_time(date_string):
-    """
-    Parses a date string into a datetime object.
-    """
-    try:
-        logging.info(f"Parsing date string: {date_string}")
-        return parse(date_string, fuzzy=True)  # Fuzzy parsing allows flexibility
-    except ValueError as e:
-        logging.error(f"Error parsing date: {e}")
-        return None
 
 
 
@@ -726,54 +927,274 @@ def extract_service_name_from_query(user_query, business_services):
 
 
 
-def get_service_name(service_id, business_id):
-    """
-    Retrieve the service name for a given service_id and business_id.
 
-    Args:
-        service_id (str): The UUID of the service.
-        business_id (str): The UUID of the business.
-
-    Returns:
-        str: The name of the service, or None if not found.
-    """
-    # Database connection details from environment variables
-    db_config = {
-        "dbname": os.getenv("DB_NAME"),
-        "user": os.getenv("DB_USER"),
-        "password": os.getenv("DB_PASSWORD"),
-        "host": os.getenv("DB_HOST"),
-        "port": os.getenv("DB_PORT")
-    }
-
-    query = """
-        SELECT name
-        FROM public.business_services
-        WHERE service_id = %s AND business_id = %s
-    """
-
+# Function call handler
+def handle_function_call(assistant_response, business_id, sender_id):
     try:
-        with psycopg2.connect(**db_config) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(query, (service_id, business_id))
-                result = cursor.fetchone()
-                if result:
-                    service_name = result[0]
-                    logging.info(f"Service found: {service_name} for ServiceID: {service_id}, BusinessID: {business_id}")
-                    return service_name
-                else:
-                    logging.warning(f"No service found for ServiceID: {service_id}, BusinessID: {business_id}")
-                    return None
+        # Log the full assistant response for debugging
+        logging.debug(f"Assistant response: {assistant_response}")
 
-    except psycopg2.Error as e:
-        logging.error(f"Database error while fetching service name: {e}")
-        return None
+        # Extract the 'content' field from the assistant response
+        raw_content = assistant_response.get("content", None)
+        if not raw_content:
+            logging.error("Assistant response is missing 'content'.")
+            raise ValueError("Assistant response is missing 'content'.")
+
+        # Parse the raw content to extract the function call
+        try:
+            response_json = json.loads(raw_content)  # Parse the JSON string
+            logging.debug(f"Parsed response JSON: {response_json}")  # Log the parsed JSON content
+            
+            function_call = response_json.get("function_call", None)
+            if not function_call:
+                logging.error("No 'function_call' found in assistant response content.")
+                raise ValueError("No 'function_call' found in assistant response content.")
+
+            logging.debug(f"Extracted function_call: {function_call}")  # Log the extracted function call
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to decode assistant response content: {e}")
+            raise ValueError("Invalid JSON format in assistant response content.")
+
+        # Validate the structure of the function call
+        if "name" not in function_call or "arguments" not in function_call:
+            logging.error("Malformed function_call: Missing 'name' or 'arguments'.")
+            raise ValueError("Malformed function_call: Missing 'name' or 'arguments'.")
+
+        # Extract function name and arguments
+        function_name = function_call["name"].strip()  # Preserve exact capitalization
+        try:
+            arguments = (
+                function_call["arguments"]
+                if isinstance(function_call["arguments"], dict)
+                else json.loads(function_call["arguments"])
+            )
+            logging.info(f"Parsed arguments: {arguments}")
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse function_call arguments: {e}")
+            raise ValueError("Invalid JSON format in function_call arguments.")
+
+        # Add required parameters to the arguments
+        arguments["sender_id"] = sender_id
+        arguments["business_id"] = business_id
+
+        # Dispatch based on the exact function name
+        if function_name == "getBusinessServices":
+            logging.debug("Dispatching to handle_get_business_services.")
+            return handle_get_business_services(arguments, business_id, sender_id)
+
+        elif function_name == "checkSlot":
+            logging.debug("Dispatching to handle_check_slot.")
+            return handle_check_slot(arguments, business_id, sender_id)
+
+        elif function_name == "bookSlot":
+            logging.debug("Dispatching to handle_book_slot.")
+            return handle_book_slot(arguments, business_id, sender_id)
+
+        elif function_name == "updateUserDetails":
+            try:
+                # Log the operation
+                logging.info(f"Updating user details with arguments: {arguments}")
+
+                # Call the update_user_details function
+                update_user_details(sender_id, arguments)
+                logging.info(f"User details updated successfully for sender_id: {sender_id}")
+
+                # Check for additional context if booking-related info exists in chat history
+                chat_history = fetch_chat_history(business_id, sender_id)
+                for message in reversed(chat_history):  # Iterate in reverse to find booking-related info
+                    if "preferredDateTime" in message.get("content", ""):
+                        arguments["preferredDateTime"] = extract_preferred_date_time(message["content"])
+                    if "serviceID" in message.get("content", ""):
+                        arguments["serviceID"] = extract_service_id(message["content"])
+                    if "durationMinutes" in message.get("content", ""):
+                        arguments["durationMinutes"] = extract_duration(message["content"])
+
+                # Proceed to checkSlot if booking context exists
+                if "preferredDateTime" in arguments and "serviceID" in arguments:
+                    logging.info("Detected booking intent. Proceeding to checkSlot.")
+                    return handle_check_slot(arguments, business_id, sender_id)
+
+                # Otherwise, conclude the flow
+                logging.info("No booking context detected. Ending flow after updating user details.")
+                return func.HttpResponse(
+                    json.dumps({"status": "success", "message": "User details updated successfully."}),
+                    status_code=200,
+                    mimetype="application/json"
+                )
+            except Exception as e:
+                logging.error(f"Failed to update user details: {e}")
+                return func.HttpResponse(
+                    json.dumps({"status": "error", "message": f"Failed to update user details: {e}"}),
+                    status_code=500,
+                    mimetype="application/json"
+                )
+
+        else:
+            logging.error(f"Unsupported function name: {function_name}")
+            return func.HttpResponse(
+                json.dumps({"error": "Unsupported function call"}),
+                status_code=400,
+                mimetype="application/json"
+            )
 
     except Exception as e:
-        logging.error(f"Unexpected error while fetching service name: {e}")
-        return None
+        logging.error(f"Error in handle_function_call: {e}")
+        return func.HttpResponse(
+            json.dumps({"error": "Function call failed", "details": str(e)}),
+            status_code=500,
+            mimetype="application/json"
+        )
 
 
+
+
+
+
+# Main Azure Function
+def main(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info("Processing chat request with OpenAI assistant.")
+    try:
+        # Parse the request body
+        req_body = req.get_json()
+        query = req_body.get("query", "").strip()
+        sender_id = req_body.get("sender_id", "").strip()
+        business_id = req_body.get("business_id", "").strip()
+
+        # Validate inputs
+        if not query:
+            logging.error("Query is missing in the request.")
+            return func.HttpResponse(
+                json.dumps({"error": "Query is missing."}),
+                status_code=400,
+                mimetype="application/json"
+            )
+
+        if not sender_id:
+            logging.error("SenderID is missing in the request.")
+            return func.HttpResponse(
+                json.dumps({"error": "SenderID is required."}),
+                status_code=400,
+                mimetype="application/json"
+            )
+
+        if not business_id:
+            logging.error("BusinessID is missing in the request.")
+            return func.HttpResponse(
+                json.dumps({"error": "BusinessID is required."}),
+                status_code=400,
+                mimetype="application/json"
+            )
+
+        # Log received inputs
+        logging.info(f"Query: {query}, SenderID: {sender_id}, BusinessID: {business_id}")
+
+        # Preprocess the query to detect intent and extract details
+        query_analysis = preprocess_query(query)
+        intent = query_analysis.get("intent")
+        extracted_details = query_analysis.get("details", {})
+
+        logging.info(f"Preprocessed query - Intent: {intent}, Details: {extracted_details}")
+
+        # Store the user's query
+        logging.info("Storing user's query in chat history.")
+        store_chat_message(business_id, sender_id, "user", query, "formatted")
+
+        # Fetch chat history for context
+        logging.info("Fetching chat history for context.")
+        chat_history = fetch_chat_history(business_id, sender_id)
+        messages = []
+        for message in chat_history:
+            if message["role"] == "function" and "name" not in message:
+                logging.error(f"Function message missing 'name': {json.dumps(message, indent=2)}")
+            messages.append({
+                "role": message["role"],
+                "content": message["content"],
+                **({"name": message["name"]} if message["role"] == "function" else {})
+            })
+        messages.append({"role": "user", "content": query})
+
+        # Add system instructions with dynamic context
+        system_message = (
+            f"You assist with service and booking inquiries for a business. The business ID is {business_id}. "
+            f"Follow these steps: "
+            f"1. For service inquiries, call `getBusinessServices` to retrieve service details. "
+            f"   - Always include `sender_id` (user ID) and `business_id` (business ID) in function calls. "
+            f"   - Do not call `getBusinessServices` again if services have already been fetched. "
+            f"2. For booking inquiries: "
+            f"   a. Automatically retrieve `durationMinutes` from service details. "
+            f"   b. Ask the user for the preferred date and time for the appointment. "
+            f"   c. Call `checkSlot` using the provided date, time, and duration to verify slot availability. "
+            f"3. User details handling: "
+            f"   - Whenever a user provides their name, phone number, or email address, extract them from the user message and only return a JSON object. "
+            f"   - The function name must be `updateUserDetails`, with no other text. "
+            f"   - The response format must be a complete JSON object with no additional characters such as backticks. "
+            f"      Example output: "
+            f'      {{"function_call": {{"name": "updateUserDetails", "arguments": {{"name": "John", "phone_number": "9876543210", "email": "john.doe@example.com"}}}}}}'
+            f"4. If the slot is available, call `bookSlot` only after confirming all details with the user. "
+            f"   - ensure that all the user details are available, if not ask for all the details and respond with the JSON object"
+            f"5. Avoid redundant function calls and unnecessary prompts for user details if already provided. "
+            f"6. Ensure all interactions are clear and professional, confirming progress at each step, except when providing JSON-only responses for function calls."
+        )
+        messages.insert(0, {"role": "system", "content": system_message})
+        logging.debug(f"Constructed messages: {json.dumps(messages, indent=2)}")
+
+        # Validate messages before sending to OpenAI
+        for idx, message in enumerate(messages):
+            if message["role"] == "function" and "name" not in message:
+                logging.error(f"Function message at index {idx} is missing 'name': {json.dumps(message, indent=2)}")
+                raise ValueError(f"Function message at index {idx} is missing 'name'.")
+
+        # Call OpenAI assistant
+        logging.debug(f"Messages array being sent to OpenAI:\n{json.dumps(messages, indent=2)}")
+        logging.info(f"Sending request to OpenAI API with model {LLM_MODEL}.")
+        response = openai.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            functions=function_descriptions,
+            function_call="auto",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=4000,
+            user=ASSISTANT_ID
+        )
+
+        # Parse assistant's response
+        assistant_response = response.choices[0].message
+        logging.info(f"Assistant raw response: {assistant_response}")
+
+        # Store and send the assistant's response if content is available
+        if hasattr(assistant_response, "content") and assistant_response.content:
+            logging.info("Storing assistant's response in chat history.")
+            store_chat_message(business_id, sender_id, "assistant", assistant_response.content, "formatted")
+            return func.HttpResponse(
+                assistant_response.content, status_code=200, mimetype="text/plain"
+            )
+
+        # Handle function calls from parsed assistant response
+        if hasattr(assistant_response, "function_call") and assistant_response.function_call:
+            logging.info("Handling function call from assistant response.")
+            return handle_function_call(assistant_response, business_id, sender_id)
+
+        # Default fallback response
+        logging.warning("Assistant response did not contain content or function call.")
+        return func.HttpResponse(
+            "I'm sorry, I couldn't process your request.",
+            status_code=500,
+            mimetype="text/plain"
+        )
+
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}", exc_info=True)
+        return func.HttpResponse(
+            json.dumps({"error": "Internal Server Error", "details": str(e)}),
+            status_code=500,
+            mimetype="application/json"
+        )
+
+
+
+
+# Functions not in use now
 
 def send_response_to_ai(system_message, business_id, sender_id, fallback_message):
     """
@@ -805,378 +1226,4 @@ def send_response_to_ai(system_message, business_id, sender_id, fallback_message
         logging.error(f"Error sending response to AI: {e}")
         return func.HttpResponse(fallback_message, status_code=200, mimetype="text/plain")
 
-
-
-def get_user_details(sender_id):
-    """
-    Retrieve user details for the given `sender_id` from the `users` table.
-    Returns a dictionary with the user details or an empty dictionary if no details are found.
-    """
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT name, phone_number, email
-            FROM users
-            WHERE sender_id = %s;
-            """,
-            (sender_id,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-
-        if row:
-            return {
-                "name": row[0],
-                "phone_number": row[1],
-                "email": row[2]
-            }
-        else:
-            return {}
-    except psycopg2.Error as e:
-        print(f"Database error: {e}")
-        return {}
-
-
-def check_missing_user_details(sender_id):
-    """
-    Check the `users` table for missing details for the given `sender_id`.
-    """
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT name, phone_number, email FROM users WHERE sender_id = %s;
-            """,
-            (sender_id,)
-        )
-        user = cursor.fetchone()
-        if not user:
-            return ["name", "phone_number", "email"]  # All details are missing
-
-        missing = []
-        if not user[0]:
-            missing.append("name")
-        if not user[1]:
-            missing.append("phone_number")
-        if not user[2]:
-            missing.append("email")
-        return missing
-
-    except Exception as e:
-        logging.error(f"Error checking missing user details: {e}")
-        return ["name", "phone_number", "email"]
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
-
-
-def call_function_endpoint(function_name, payload, sender_id, business_id):
-    try:
-        endpoint_url = function_endpoints.get(function_name)
-        if not endpoint_url:
-            logging.error(f"Unknown function name: {function_name}")
-            raise ValueError(f"Unknown function name: {function_name}")
-
-        logging.info(f"Calling {function_name} at {endpoint_url} with payload: {payload}")
-        response = requests.post(endpoint_url, json=payload)
-        response.raise_for_status()
-
-        result = response.json()
-        logging.info(f"Response from {function_name}: {result}")
-
-        # Store the response as a function message
-        if function_name == "bookSlot":
-            booking_result = result.get("result")
-            follow_up_message = (
-                f"Booking successful! Details: {booking_result}"
-                if booking_result
-                else "Booking failed. Please try again."
-            )
-            # Store as a function message with the correct name
-            store_chat_message(
-                business_id,
-                sender_id,
-                "function",
-                json.dumps(result),  # The full function response
-                "formatted",
-                name=function_name  # Ensure the name field is stored
-            )
-            store_chat_message(
-                business_id,
-                sender_id,
-                "assistant",
-                follow_up_message,
-                "formatted"
-            )
-            return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
-
-        # For other functions, store the response with the name
-        store_chat_message(
-            business_id,
-            sender_id,
-            "function",
-            json.dumps(result),  # The full function response
-            "formatted",
-            name=function_name  # Ensure the name field is stored
-        )
-
-        return result
-
-    except requests.RequestException as e:
-        logging.error(f"HTTP request error for {function_name}: {e}")
-        raise
-    except Exception as e:
-        logging.error(f"Unexpected error in {function_name}: {e}")
-        raise
-
-
-
-def extract_user_details(user_query):
-    """
-    Extract user details (name, phone number, email) from the query.
-    """
-    import re
-    extracted_details = {}
-
-    try:
-        # Extract phone number
-        phone_match = re.search(r'\b\d{10}\b', user_query)  # Matches 10-digit phone numbers
-        if phone_match:
-            extracted_details["phone_number"] = phone_match.group()
-
-        # Extract name (assumes format "My name is [Name]")
-        name_match = re.search(r"my name is ([A-Z][a-z]+)", user_query, re.IGNORECASE)
-        if name_match:
-            extracted_details["name"] = name_match.group(1)
-
-        # Extract email address
-        email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', user_query)
-        if email_match:
-            extracted_details["email"] = email_match.group()
-
-        logging.debug(f"Extracted details: {extracted_details}")
-    except Exception as e:
-        logging.error(f"Error extracting details: {e}", exc_info=True)
-
-    return extracted_details
-
-
-
-
-
-def fetch_chat_history(business_id, sender_id, limit=CHAT_HISTORY_LIMIT):
-    """
-    Fetch chat history for context.
-    """
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT role, content, name
-            FROM chathistory
-            WHERE business_id = %s AND sender_id = %s
-            ORDER BY timestamp ASC
-            LIMIT %s
-            """,
-            (business_id, sender_id, limit)
-        )
-        rows = cursor.fetchall()
-        return [
-            {"role": row[0], "content": row[1], "name": row[2]} if row[0] == "function" else {"role": row[0], "content": row[1]}
-            for row in rows
-        ]
-    except Exception as e:
-        logging.error(f"Error fetching chat history: {e}")
-        return []
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
-
-
-
-
-
-def store_chat_message(business_id, sender_id, role, content, message_type="formatted", name=None):
-    """
-    Store chat messages in the `chathistory` table.
-    """
-    try:
-        logging.info(f"Storing message: role={role}, name={name}, content={content[:100]}")  # Log truncated content
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO chathistory (business_id, sender_id, role, content, message_type, name)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            (business_id, sender_id, role, content, message_type, name)
-        )
-        conn.commit()
-        logging.info("Message stored successfully.")
-    except psycopg2.Error as e:
-        logging.error(f"Database error while storing chat message: {e}")
-    except Exception as e:
-        logging.error(f"Unexpected error storing chat message: {e}")
-    finally:
-        try:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
-        except Exception as cleanup_error:
-            logging.error(f"Error during connection cleanup: {cleanup_error}")
-
-
-
-def update_booking(booking_id, updates):
-    """
-    Update booking details in the `bookings` table.
-    """
-    try:
-        # Log input details
-        logging.info(f"Updating booking with ID: {booking_id}, Updates: {updates}")
-
-        # Prepare database connection
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-        cursor = conn.cursor()
-
-        # Build the SQL query dynamically
-        set_clause = ", ".join([f"{key} = %s" for key in updates.keys()])
-        query = f"""
-            UPDATE bookings
-            SET {set_clause}, updated_at = NOW()
-            WHERE booking_id = %s;
-        """
-        logging.debug(f"Generated query: {query}")
-
-        # Execute the query
-        cursor.execute(query, list(updates.values()) + [booking_id])
-        conn.commit()
-
-        logging.info(f"Booking with ID: {booking_id} successfully updated.")
-
-    except psycopg2.Error as e:
-        logging.error(f"Database error while updating booking: {e}")
-    except Exception as e:
-        logging.error(f"Unexpected error while updating booking: {e}")
-    finally:
-        try:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
-        except Exception as cleanup_error:
-            logging.error(f"Error during connection cleanup: {cleanup_error}")
-
-
-
-
-
-def create_booking(sender_id, business_id, service_name=None, preferred_date_time=None):
-    """
-    Create a new booking entry in the `bookings` table.
-    """
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO bookings (sender_id, business_id, service_name, preferred_date_time)
-            VALUES (%s, %s, %s, %s)
-            RETURNING booking_id;
-            """,
-            (sender_id, business_id, service_name, preferred_date_time)
-        )
-        booking_id = cursor.fetchone()[0]
-        conn.commit()
-        logging.info(f"Booking created successfully with ID: {booking_id}")
-        return booking_id
-    except psycopg2.Error as db_error:
-        logging.error(f"Database error creating booking: {db_error}")
-        raise
-    except Exception as e:
-        logging.error(f"Unexpected error creating booking: {e}")
-        raise
-    finally:
-        try:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
-        except Exception as cleanup_error:
-            logging.error(f"Error during connection cleanup: {cleanup_error}")
-
-
-
-
-
-def get_active_booking(sender_id, business_id):
-    """
-    Retrieve an active booking for the given sender_id and business_id.
-    """
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT booking_id, sender_id, business_id, service_name, 
-                   preferred_date_time, confirmed, created_at, updated_at
-            FROM bookings
-            WHERE sender_id = %s AND business_id = %s AND confirmed = FALSE
-            ORDER BY created_at DESC LIMIT 1;
-            """,
-            (sender_id, business_id)
-        )
-        booking = cursor.fetchone()
-        if booking:
-            logging.info(f"Active booking found: {booking}")
-            return {
-                "booking_id": booking[0],
-                "sender_id": booking[1],
-                "business_id": booking[2],
-                "service_name": booking[3],
-                "preferred_date_time": booking[4],
-                "confirmed": booking[5],
-                "created_at": booking[6],
-                "updated_at": booking[7],
-            }
-        else:
-            logging.info("No active booking found.")
-            return None
-    except psycopg2.Error as db_error:
-        logging.error(f"Database error retrieving active booking: {db_error}")
-        raise
-    except Exception as e:
-        logging.error(f"Unexpected error retrieving active booking: {e}")
-        raise
-    finally:
-        try:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
-        except Exception as cleanup_error:
-            logging.error(f"Error during connection cleanup: {cleanup_error}")
 

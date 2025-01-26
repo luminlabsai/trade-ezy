@@ -60,7 +60,16 @@ def update_user_details(sender_id, userDetails):
     Update user details in the database for a given sender_id. If the user doesn't exist, create a new record.
     """
     try:
-        # SQL query to update user details
+        # Extract details if "query" is present
+        if "query" in userDetails:
+            extracted_details = extract_user_details(userDetails["query"])
+            userDetails.update(extracted_details)
+
+        # Skip if no details are provided
+        if not userDetails.get("name") and not userDetails.get("phone_number") and not userDetails.get("email"):
+            logging.warning(f"No valid user details provided for sender_id: {sender_id}. Skipping update.")
+            return
+
         update_query = """
             UPDATE public.users
             SET
@@ -70,7 +79,6 @@ def update_user_details(sender_id, userDetails):
                 updated_at = NOW()
             WHERE sender_id = %s
         """
-        # SQL query to insert user if not exists
         insert_query = """
             INSERT INTO public.users (sender_id, name, phone_number, email, created_at, updated_at)
             VALUES (%s, %s, %s, %s, NOW(), NOW())
