@@ -9,11 +9,11 @@ import string
 from rapidfuzz import process
 from uuid import uuid4
 from urllib.parse import quote
-from function_descriptions import function_descriptions
-from function_endpoints import function_endpoints
 import re
 from dateutil.parser import parse
 from datetime import datetime
+from function_descriptions import function_descriptions
+from function_endpoints import function_endpoints
 
 
 # Configuration
@@ -334,75 +334,6 @@ def get_or_create_user(sender_id):
         return None
 
 
-
-
-def update_user_details(sender_id, userDetails):
-    """
-    Update user details in the database for a given sender_id. If the user doesn't exist, create a new record.
-    """
-    try:
-        # Log input details
-        logging.info(f"Updating user details for sender_id: {sender_id}, Details: {userDetails}")
-
-        # Skip if no valid details are provided
-        if not any([userDetails.get("name"), userDetails.get("phone_number"), userDetails.get("email")]):
-            logging.warning(f"No valid user details provided for sender_id: {sender_id}. Skipping update.")
-            return
-
-        update_query = """
-            UPDATE public.users
-            SET
-                name = COALESCE(%s, name),
-                phone_number = COALESCE(%s, phone_number),
-                email = COALESCE(%s, email),
-                updated_at = NOW()
-            WHERE sender_id = %s
-        """
-        insert_query = """
-            INSERT INTO public.users (sender_id, name, phone_number, email, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, NOW(), NOW())
-            ON CONFLICT (sender_id) DO NOTHING
-        """
-
-        with psycopg2.connect(
-            dbname=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT")
-        ) as conn:
-            with conn.cursor() as cursor:
-                # Attempt to update user details
-                cursor.execute(
-                    update_query,
-                    (
-                        userDetails.get("name"),
-                        userDetails.get("phone_number"),
-                        userDetails.get("email"),
-                        sender_id
-                    )
-                )
-                logging.info(f"Update query executed. Rows affected: {cursor.rowcount}")
-
-                # If no rows were updated, insert a new user
-                if cursor.rowcount == 0:
-                    logging.warning(f"No user found with sender_id: {sender_id}. Creating a new user.")
-                    cursor.execute(
-                        insert_query,
-                        (
-                            sender_id,
-                            userDetails.get("name"),
-                            userDetails.get("phone_number"),
-                            userDetails.get("email")
-                        )
-                    )
-                    logging.info(f"Insert query executed. New user created with sender_id: {sender_id}")
-
-                conn.commit()
-        logging.info(f"Successfully updated user details for sender_id: {sender_id}")
-    except Exception as e:
-        logging.error(f"Failed to update user details: {e}")
-        raise
 
 
 
@@ -930,33 +861,24 @@ def extract_service_name_from_query(user_query, business_services):
 
 # Function call handler
 def handle_function_call(assistant_response, business_id, sender_id):
-    # Log the entry into the function
-    logging.info("Invoking handle_function_call.")
-    logging.debug(f"Function call invoked with: {assistant_response}")
-    logging.debug(f"Business ID: {business_id}, Sender ID: {sender_id}")
-    
     try:
-        # Log the full assistant response for debugging
-        logging.debug(f"Assistant response: {assistant_response}")
+        # Extract the function_call object
+        function_call = assistant_response.function_call
 
-        # Extract the function_call directly from the assistant_response
-        function_call = assistant_response.get("function_call", None)
-        if not function_call:
-            logging.error("Assistant response is missing 'function_call'.")
-            raise ValueError("Assistant response is missing 'function_call'.")
+        # Log the raw function_call for debugging
+        logging.debug(f"Raw function_call: {function_call}")
 
-        # Validate the structure of the function call
-        if "name" not in function_call or "arguments" not in function_call:
-            logging.error("Malformed function_call: Missing 'name' or 'arguments'.")
-            raise ValueError("Malformed function_call: Missing 'name' or 'arguments'.")
+        # Validate the structure of function_call
+        if not function_call or not hasattr(function_call, "name") or not hasattr(function_call, "arguments"):
+            logging.error("Malformed function_call data. Missing 'name' or 'arguments'.")
+            raise ValueError("Malformed function_call data. Missing 'name' or 'arguments'.")
 
         # Extract function name and arguments
-        function_name = function_call["name"].strip()  # Preserve exact capitalization
+        function_name = function_call.name
         try:
             arguments = (
-                function_call["arguments"]
-                if isinstance(function_call["arguments"], dict)
-                else json.loads(function_call["arguments"])
+                function_call.arguments if isinstance(function_call.arguments, dict)
+                else json.loads(function_call.arguments)
             )
             logging.info(f"Parsed arguments: {arguments}")
         except json.JSONDecodeError as e:
@@ -966,33 +888,31 @@ def handle_function_call(assistant_response, business_id, sender_id):
         # Add required parameters to the arguments
         arguments["sender_id"] = sender_id
         arguments["business_id"] = business_id
-        logging.info(f"Final arguments for {function_name}: {arguments}")
 
-        # Dispatch based on the exact function name
+        # Dispatch to the appropriate function
         if function_name == "getBusinessServices":
-            logging.debug("Dispatching to handle_get_business_services.")
+            logging.info(f"Dispatching to handle_get_business_services with arguments: {arguments}")
             return handle_get_business_services(arguments, business_id, sender_id)
 
         elif function_name == "checkSlot":
-            logging.debug("Dispatching to handle_check_slot.")
+            logging.info(f"Dispatching to handle_check_slot with arguments: {arguments}")
             return handle_check_slot(arguments, business_id, sender_id)
 
         elif function_name == "bookSlot":
-            logging.debug("Dispatching to handle_book_slot.")
+            logging.info(f"Dispatching to handle_book_slot with arguments: {arguments}")
             return handle_book_slot(arguments, business_id, sender_id)
 
-        elif function_name == "updateUserDetails":
+        elif function_name == "update_user_details":
             try:
-                # Log the operation
                 logging.info(f"Updating user details with arguments: {arguments}")
 
-                # Call the update_user_details function
+                # Call the function to update user details
                 update_user_details(sender_id, arguments)
                 logging.info(f"User details updated successfully for sender_id: {sender_id}")
 
-                # Check for additional context if booking-related info exists in chat history
+                # Fetch chat history and check for booking context
                 chat_history = fetch_chat_history(business_id, sender_id)
-                for message in reversed(chat_history):  # Iterate in reverse to find booking-related info
+                for message in reversed(chat_history):  # Iterate in reverse for latest context
                     if "preferredDateTime" in message.get("content", ""):
                         arguments["preferredDateTime"] = extract_preferred_date_time(message["content"])
                     if "serviceID" in message.get("content", ""):
@@ -1005,8 +925,7 @@ def handle_function_call(assistant_response, business_id, sender_id):
                     logging.info("Detected booking intent. Proceeding to checkSlot.")
                     return handle_check_slot(arguments, business_id, sender_id)
 
-                # Otherwise, conclude the flow
-                logging.info("No booking context detected. Ending flow after updating user details.")
+                # Conclude flow if no further context exists
                 return func.HttpResponse(
                     json.dumps({"status": "success", "message": "User details updated successfully."}),
                     status_code=200,
@@ -1023,18 +942,19 @@ def handle_function_call(assistant_response, business_id, sender_id):
         else:
             logging.error(f"Unsupported function name: {function_name}")
             return func.HttpResponse(
-                json.dumps({"error": "Unsupported function call"}),
+                json.dumps({"error": "Unsupported function call", "function_name": function_name}),
                 status_code=400,
                 mimetype="application/json"
             )
 
     except Exception as e:
-        logging.error(f"Error in handle_function_call: {e}")
+        logging.error(f"Error in handle_function_call: {e}", exc_info=True)
         return func.HttpResponse(
             json.dumps({"error": "Function call failed", "details": str(e)}),
             status_code=500,
             mimetype="application/json"
         )
+
 
 
 
@@ -1077,21 +997,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # Log received inputs
         logging.info(f"Query: {query}, SenderID: {sender_id}, BusinessID: {business_id}")
 
-        # Preprocess the query to detect intent and extract details
-        query_analysis = preprocess_query(query)
-        intent = query_analysis.get("intent")
-        extracted_details = query_analysis.get("details", {})
-
-        logging.info(f"Preprocessed query - Intent: {intent}, Details: {extracted_details}")
-
-        # Store the user's query
+        # Store the user's query in chat history
         logging.info("Storing user's query in chat history.")
         store_chat_message(business_id, sender_id, "user", query, "formatted")
 
         # Fetch chat history for context
         logging.info("Fetching chat history for context.")
         chat_history = fetch_chat_history(business_id, sender_id)
-        messages = [{"role": message["role"], "content": message["content"]} for message in chat_history]
+        messages = [{"role": msg["role"], "content": msg["content"]} for msg in chat_history]
         messages.append({"role": "user", "content": query})
 
         # Add system instructions
@@ -1099,7 +1012,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             f"You assist with service and booking inquiries for a business. The business ID is {business_id}. "
             f"Follow these steps: "
             f"1. For service inquiries, call `getBusinessServices` to retrieve service details. "
-            f"   - Always include `sender_id` (sender ID) and `business_id` (business ID) in function calls. "
+            f"   - Always include `sender_id` (user ID) and `business_id` (business ID) in function calls. "
             f"   - Do not call `getBusinessServices` again if services have already been fetched. "
             f"2. For booking inquiries: "
             f"   a. Automatically retrieve `durationMinutes` from service details. "
@@ -1107,50 +1020,50 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             f"   c. Call `checkSlot` using the provided date, time, and duration to verify slot availability. "
             f"3. User details handling: "
             f"   - Whenever a user provides their name, phone number, or email address, extract them from the user message and only return a JSON object. "
-            f"   - The function name must be `updateUserDetails`, with no other text. "
+            f"   - The function name must be `update_user_details`, with no other text. "
             f"   - The response format must be a complete JSON object with no additional characters such as backticks. "
             f"      Example output: "
-            f'      {{"function_call": {{"name": "updateUserDetails", "arguments": {{"name": "John", "phone_number": "9876543210", "email": "john.doe@example.com"}}}}}}'
+            f'      {{"function_call": {{"name": "update_user_details", "arguments": {{"name": "John", "phone_number": "9876543210", "email": "john.doe@example.com"}}}}}}'
             f"4. If the slot is available, call `bookSlot` only after confirming all details with the user. "
             f"   - ensure that all the user details are available, if not ask for all the details and respond with the JSON object"
             f"5. Avoid redundant function calls and unnecessary prompts for user details if already provided. "
             f"6. Ensure all interactions are clear and professional, confirming progress at each step, except when providing JSON-only responses for function calls."
         )
         messages.insert(0, {"role": "system", "content": system_message})
+        logging.debug(f"Constructed messages: {json.dumps(messages, indent=2)}")
 
-        # Send request to OpenAI
-        logging.debug(f"Messages sent to OpenAI: {json.dumps(messages, indent=2)}")
+        # Call OpenAI assistant
+        logging.info(f"Sending request to OpenAI API with model {LLM_MODEL}.")
         response = openai.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
+            functions=function_descriptions,
+            function_call="auto",
             temperature=0.7,
-            max_tokens=500,
-            user=ASSISTANT_ID,
+            top_p=0.95,
+            max_tokens=800,
+            user=ASSISTANT_ID
         )
 
         # Parse assistant response
         assistant_response = response.choices[0].message
         logging.info(f"Assistant raw response: {assistant_response}")
 
-        # Handle function calls
         # Immediately handle function calls
-        if hasattr(assistant_response, "function_call") and assistant_response.function_call:
-            logging.info("Function call detected in assistant response. Dispatching to handle_function_call.")
-            function_call = {
-                "name": assistant_response.function_call.name,
-                "arguments": assistant_response.function_call.arguments,
-            }
-            return handle_function_call(function_call, business_id, sender_id)
+        if assistant_response.function_call:
+            logging.info("Handling function call from assistant response.")
+            return handle_function_call(assistant_response, business_id, sender_id)
 
-
-        # Handle content-based responses
-        if hasattr(assistant_response, "content") and assistant_response.content:
+        # Handle regular content responses
+        if assistant_response.content:
             logging.info("Storing assistant's response in chat history.")
             store_chat_message(business_id, sender_id, "assistant", assistant_response.content, "formatted")
-            return func.HttpResponse(assistant_response.content, status_code=200, mimetype="text/plain")
+            return func.HttpResponse(
+                assistant_response.content, status_code=200, mimetype="text/plain"
+            )
 
-        # Fallback response
-        logging.warning("No valid response content or function call detected in assistant response.")
+        # Default fallback response
+        logging.warning("Assistant response did not contain content or function call.")
         return func.HttpResponse(
             "I'm sorry, I couldn't process your request.",
             status_code=500,
@@ -1164,6 +1077,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             status_code=500,
             mimetype="application/json"
         )
+
 
 
 

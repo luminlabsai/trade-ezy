@@ -61,7 +61,7 @@ function_descriptions = [
         }
     },
     {
-        "name": "updateUserDetails",
+        "name": "update_user_details",
         "description": (
             "Collect and update user details (e.g., name, phone number, email) for a sender ID in the database. "
             "This ensures the user profile is up-to-date for booking and other interactions."
