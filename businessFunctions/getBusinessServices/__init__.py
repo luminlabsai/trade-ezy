@@ -42,7 +42,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         # Allowed and default fields
         allowed_fields = {"service_id", "service_name", "description", "duration_minutes", "price"}
-        default_fields = ["service_id", "service_name", "duration_minutes", "price"]  # Excluding description by default
+        default_fields = ["service_id", "service_name", "duration_minutes", "price"]
 
         # Parse and validate fields
         if fields:
@@ -54,10 +54,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             logging.info("Fields not provided. Using default fields.")
             fields = default_fields
 
-        # Ensure `duration_minutes` is always included
+        # Ensure `duration_minutes` and `service_name` are always included
         if "duration_minutes" not in fields:
             fields.append("duration_minutes")
-            logging.info("Ensuring 'duration_minutes' is included in the fields.")
+        if "service_name" not in fields:
+            fields.append("service_name")
+        logging.info(f"Final fields to query: {fields}")
 
         # Construct the SELECT clause
         select_clause = ", ".join(fields)
@@ -71,7 +73,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             query_params.append(f"%{service_name.strip()}%")
 
         # Log the query for debugging
-        logging.info(f"Fields requested: {fields}")
         logging.info(f"Constructed query: {query} with params {query_params}")
 
         # Connect to PostgreSQL

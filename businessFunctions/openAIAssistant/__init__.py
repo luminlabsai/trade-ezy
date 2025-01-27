@@ -242,15 +242,16 @@ def serialize_services_as_text(business_services):
     lines = []
     for service in business_services:
         # Ensure all required fields are present and handle missing values gracefully
-        name = service.get('name', 'Unknown Service')
+        service_name = service.get('service_name', 'Unknown Service')
         price = service.get('price', 'N/A')
         duration = service.get('duration_minutes', 'N/A')
 
         # Format the line with service details
-        line = f"- {name} (Price: ${price}, Duration: {duration} mins)"
+        line = f"- {service_name} (Price: ${price}, Duration: {duration} mins)"
         lines.append(line)
 
     return "Here are the services we offer:\n" + "\n".join(lines)
+
 
 
 
@@ -619,7 +620,7 @@ def handle_get_business_services(arguments, business_id, sender_id):
         logging.error("Endpoint for getBusinessServices is not configured.")
         raise ValueError("Endpoint for getBusinessServices is not configured.")
 
-    # Fetch all available business services early
+    # Fetch all available business services
     try:
         logging.info("Fetching business services from the endpoint.")
         response = requests.post(
@@ -627,7 +628,7 @@ def handle_get_business_services(arguments, business_id, sender_id):
             json={
                 "business_id": business_id,
                 "sender_id": sender_id,
-                "fields": ["service_id", "name", "price", "duration_minutes"]
+                "fields": ["service_id", "service_name", "price", "duration_minutes"]
             }
         )
         response.raise_for_status()
@@ -659,7 +660,7 @@ def handle_get_business_services(arguments, business_id, sender_id):
     logging.info(f"Processing user query: {user_query}")
 
     # Pass available business services to preprocess_query
-    available_service_names = [service["name"] for service in business_services]
+    available_service_names = [service["service_name"] for service in business_services]
     preprocessed_query = preprocess_query(user_query, available_service_names)
     intent = preprocessed_query["intent"]
     details = preprocessed_query["details"]
@@ -674,7 +675,7 @@ def handle_get_business_services(arguments, business_id, sender_id):
     # Handle cases where a specific service is matched
     if "service_name" in details:
         matched_service_name = details["service_name"].lower()
-        service_details = next((s for s in business_services if s["name"].lower() == matched_service_name), None)
+        service_details = next((s for s in business_services if s["service_name"].lower() == matched_service_name), None)
 
         if service_details:
             service_message = serialize_service_details_as_text(service_details)
@@ -689,13 +690,14 @@ def handle_get_business_services(arguments, business_id, sender_id):
 
 
 
+
 def handle_check_slot(arguments, business_id, sender_id):
     """
     Handles calling the checkSlot function to check slot availability.
     """
 
     # Validate required arguments
-    if not all(k in arguments for k in ["preferredDateTime", "service_id", "durationMinutes"]):
+    if not all(k in arguments for k in ["preferredDateTime", "service_name", "durationMinutes"]):
         return func.HttpResponse(
             json.dumps({"error": "Missing required arguments for slot checking."}),
             status_code=400,
@@ -708,10 +710,10 @@ def handle_check_slot(arguments, business_id, sender_id):
         raise ValueError("Endpoint for checkSlot is not configured.")
 
     payload = {
-        "senderID": sender_id,
+        "sender_id": sender_id,
         "preferredDateTime": arguments["preferredDateTime"],
         "durationMinutes": arguments["durationMinutes"],
-        "service_id": arguments["service_id"],
+        "service_name": arguments["service_name"],  # Updated key
         "business_id": business_id
     }
 
@@ -787,12 +789,53 @@ def resolve_missing_arguments(arguments, sender_id):
     return arguments
 
 
-
-
 def handle_book_slot(arguments, business_id, sender_id):
     """
     Handles the 'bookSlot' function call with pre-resolved arguments.
     """
+    # Validate the required arguments
+    if not arguments.get("service_name"):
+        return func.HttpResponse(
+            json.dumps({"error": "Missing required argument: service_name."}),
+            status_code=400,
+            mimetype="application/json"
+        )
+
+    # Query the database for duration and other service details using service_name
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT duration_minutes
+            FROM Services
+            WHERE business_id = %s AND service_name ILIKE %s
+            """,
+            (business_id, arguments["service_name"])
+        )
+        service_details = cursor.fetchone()
+        if not service_details:
+            return func.HttpResponse(
+                json.dumps({"error": f"Service '{arguments['service_name']}' not found for the given business."}),
+                status_code=404,
+                mimetype="application/json"
+            )
+        arguments["durationMinutes"] = arguments.get("durationMinutes") or service_details[0]
+    except Exception as e:
+        logging.error(f"Error fetching service details: {e}")
+        return func.HttpResponse(
+            json.dumps({"error": "Failed to retrieve service details. Please try again later."}),
+            status_code=500,
+            mimetype="application/json"
+        )
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
     # Construct the booking payload
     booking_payload = {
         "business_id": business_id,
@@ -800,7 +843,7 @@ def handle_book_slot(arguments, business_id, sender_id):
         "clientName": arguments["clientName"],
         "phone_number": arguments["phone_number"],
         "email": arguments["email"],
-        "service_id": arguments["service_id"],  # Use service_id directly
+        "service_name": arguments["service_name"],  # Use service_name instead of service_id
         "preferredDateTime": arguments["preferredDateTime"],
         "durationMinutes": arguments["durationMinutes"],
     }
@@ -818,7 +861,7 @@ def handle_book_slot(arguments, business_id, sender_id):
         response.raise_for_status()
         result = response.json()
         follow_up_message = (
-            f"Thank you, {arguments['clientName']}. Your booking for service {arguments['service_id']} on {arguments['preferredDateTime']} "
+            f"Thank you, {arguments['clientName']}. Your booking for '{arguments['service_name']}' on {arguments['preferredDateTime']} "
             f"has been successfully recorded. A confirmation email will be sent to {arguments['email']}."
         )
         store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
@@ -830,6 +873,7 @@ def handle_book_slot(arguments, business_id, sender_id):
             status_code=500,
             mimetype="application/json"
         )
+
 
 
 

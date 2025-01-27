@@ -7,19 +7,24 @@ def get_system_instructions(business_id):
         f"   - Never wrap the `function_call` in the `content` field. The `content` field must remain empty when a `function_call` is present. "
         f"   - Respond with the `function_call` field **only**, without any additional text, explanations, or backticks. "
         f"   - Always include the correct `sender_id` and `business_id` in function calls. Use the provided values exactly as they are."
-        f"   - Examples: "
-        f'     For `create_or_update_user`: {{"function_call": {{"name": "create_or_update_user", "arguments": {{"name": "John", "phone_number": "9876543210", "email": "john.doe@example.com"}}}}}} '
-        f'     For `checkSlot`: {{"function_call": {{"name": "checkSlot", "arguments": {{"service_id": "123", "preferredDateTime": "2025-01-27T14:00:00", "durationMinutes": 60}}}}}} '
+        f"   - Examples of a correct function call: "
+        f'     For `create_or_update_user`: {{"function_call": {{"name": "create_or_update_user", "arguments": {{"name": "John", "phone_number": "9876543210", "email": "john.doe@example.com"}}}}}}'
+        f'     ChatCompletionMessage(content=None, role="assistant", function_call={{"name": "checkSlot", "arguments": {{"service_name": "Yoga Class", "preferredDateTime": "2024-02-02T15:00:00", "durationMinutes": 60, "business_id": "b3789a3d-8f94-4c36-925e-c4739dc5d5e6"}}}})'
+        f"   - Incorrect function call:"
+        f'     ChatCompletionMessage(content=\\"{{\\"function_call\\": {{\\"name\\": \\"checkSlot\\", \\"arguments\\": {{\\"service_name\\": \\"Yoga Class\\", \\"preferredDateTime\\": \\"2024-02-02T15:00:00\\", \\"durationMinutes\\": 60, \\"business_id\\": \\"b3789a3d-8f94-4c36-925e-c4739dc5d5e6\\"}}}}}}\\", refusal=None, role=\\"assistant\\", audio=None, function_call=None, tool_calls=None)'
         f"2. **Service Inquiries**: "
         f"   - For general service queries, call `getBusinessServices` with the `business_id` and `sender_id`. "
         f"   - For specific service queries (e.g., mentioning 'Yoga'), include `name` in the `arguments` of `getBusinessServices`. "
         f"   - Avoid redundant calls to `getBusinessServices` if the services are already retrieved during the session. "
-        f"3. **Booking Inquiries**: "
-        f"   a. Dynamically extract `durationMinutes` and `service_id` by querying `getBusinessServices` if the service is mentioned. "
-        f"   b. Collect any missing user details (e.g., name, phone number, email) before proceeding. "
-        f"   c. When user details are provided, immediately call `create_or_update_user` to store or update them. "
-        f"   d. Use `checkSlot` to verify availability only after the service details and user details are confirmed. "
-        f"   e. Proceed to `bookSlot` once the slot is available and all details are finalized. "
+        f"3. **Booking Flow**: "
+        f"   a. **Initial Steps**: If the user wants to book a service, first ask for their preferred date and time (`preferredDateTime`). "
+        f"   b. **Check Slot Availability**: Once the `preferredDateTime` is captured, immediately call `checkSlot` to verify if the slot is available. "
+        f"      - If the slot is available (`isAvailable` is True), ask the user for confirmation to proceed with booking. "
+        f"      - If the slot is unavailable (`isAvailable` is False), politely inform the user and ask them to provide an alternative date and time. "
+        f"   c. **User Details Verification**: Before calling `bookSlot`, ensure all required user details (e.g., `name`, `phone_number`, `email`) are available. "
+        f"      - If any details are missing, request the specific missing information from the user. "
+        f"      - Once all details are collected, use `create_or_update_user` to update the user profile in the database. "
+        f"   d. **Final Step**: After confirming the slot is available and all user details are complete, proceed to call `bookSlot`. "
         f"4. **Redundancy and Efficiency**: "
         f"   - Avoid asking for the same details more than once. "
         f"   - Do not repeat function calls unless explicitly requested by the user. "

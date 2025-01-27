@@ -7,6 +7,15 @@ from googleapiclient.errors import HttpError
 import azure.functions as func
 import os
 import pytz
+import psycopg2
+
+
+# PostgreSQL configuration from environment variables
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_PORT = os.getenv("DB_PORT", 5432)
 
 # Configure logging
 logger = logging.getLogger()
@@ -69,23 +78,70 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         req_body = req.get_json()
         sender_id = req_body.get('sender_id')
         preferred_date_time = req_body.get('preferredDateTime')
-        duration_minutes = req_body.get('durationMinutes')
         client_name = req_body.get('clientName')
-        service_name = req_body.get('service_name')  # Changed from 'service' to 'service_name'
-        phone_number = req_body.get('phone_number')  # Changed to match argument naming
-        email = req_body.get('email')  # Changed to match argument naming
+        service_name = req_body.get('service_name')
+        phone_number = req_body.get('phone_number')
+        email = req_body.get('email')
+        business_id = req_body.get('business_id')  # Ensure the business_id is also passed
         time_zone = req_body.get('timeZone', 'Australia/Brisbane')
 
-        if not all([sender_id, preferred_date_time, duration_minutes, client_name, service_name, phone_number, email]):
+        if not all([sender_id, preferred_date_time, client_name, service_name, phone_number, email, business_id]):
             return func.HttpResponse(
                 json.dumps({
-                    "error": "All parameters are required: sender_id, preferredDateTime, durationMinutes, clientName, service_name, phone_number, email."
+                    "error": "All parameters are required: sender_id, preferredDateTime, clientName, service_name, phone_number, email, business_id."
                 }),
                 status_code=400,
                 mimetype="application/json"
             )
 
-        logging.info(f"Booking slot for sender_id: {sender_id}")
+        logging.info(f"Booking slot for sender_id: {sender_id}, service_name: {service_name}, business_id: {business_id}")
+
+        # Connect to PostgreSQL to validate service_name and get details
+        conn = None
+        cursor = None
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                port=DB_PORT
+            )
+            cursor = conn.cursor()
+
+            # Query to get service details
+            cursor.execute(
+                """
+                SELECT duration_minutes, price
+                FROM Services
+                WHERE business_id = %s AND service_name ILIKE %s
+                """,
+                (business_id, service_name)
+            )
+            result = cursor.fetchone()
+
+            if not result:
+                return func.HttpResponse(
+                    json.dumps({"error": f"Service '{service_name}' not found for business_id {business_id}."}),
+                    status_code=404,
+                    mimetype="application/json"
+                )
+
+            duration_minutes = result[0]
+            logging.info(f"Service '{service_name}' found with duration {duration_minutes} minutes.")
+
+        except psycopg2.Error as e:
+            logging.error(f"Database error: {e}")
+            return func.HttpResponse(
+                json.dumps({"error": "An error occurred while querying the database."}),
+                status_code=500,
+                mimetype="application/json"
+            )
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
         # Parse preferred date and time
         try:
@@ -105,7 +161,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         # Prepare event description
         description = (
-            f"Service Name: {service_name}\n"  # Keep the service_name in the description
+            f"Service Name: {service_name}\n"
             f"Client Name: {client_name}\n"
             f"Phone: {phone_number}\n"
             f"Email: {email}"
@@ -114,7 +170,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # Add event to calendar
         event = add_calendar_entry(
             CALENDAR_ID,
-            f'Appointment with {client_name}',
+            f'Appointment with {client_name} for {service_name}',
             description,
             start_time_str,
             end_time_str
@@ -124,7 +180,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(
             json.dumps({
                 "sender_id": sender_id,
-                "result": f"Appointment scheduled with {client_name} for service ID {service_name} on {start_time_str}",
+                "result": f"Appointment scheduled with {client_name} for {service_name} on {start_time_str}",
                 "eventId": event.get('id')
             }),
             status_code=200,
