@@ -67,25 +67,25 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Parse and validate request
         req_body = req.get_json()
-        sender_id = req_body.get('senderID')
+        sender_id = req_body.get('sender_id')
         preferred_date_time = req_body.get('preferredDateTime')
         duration_minutes = req_body.get('durationMinutes')
         client_name = req_body.get('clientName')
-        service = req_body.get('service')
-        phone_number = req_body.get('phoneNumber')
-        email_address = req_body.get('emailAddress')
+        service_name = req_body.get('service_name')  # Changed from 'service' to 'service_name'
+        phone_number = req_body.get('phone_number')  # Changed to match argument naming
+        email = req_body.get('email')  # Changed to match argument naming
         time_zone = req_body.get('timeZone', 'Australia/Brisbane')
 
-        if not all([sender_id, preferred_date_time, duration_minutes, client_name, service, phone_number, email_address]):
+        if not all([sender_id, preferred_date_time, duration_minutes, client_name, service_name, phone_number, email]):
             return func.HttpResponse(
                 json.dumps({
-                    "error": "All parameters are required: senderID, preferredDateTime, durationMinutes, clientName, service, phoneNumber, emailAddress."
+                    "error": "All parameters are required: sender_id, preferredDateTime, durationMinutes, clientName, service_name, phone_number, email."
                 }),
                 status_code=400,
                 mimetype="application/json"
             )
 
-        logging.info(f"Booking slot for senderID: {sender_id}")
+        logging.info(f"Booking slot for sender_id: {sender_id}")
 
         # Parse preferred date and time
         try:
@@ -105,10 +105,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         # Prepare event description
         description = (
-            f"Service: {service}\n"
+            f"Service Name: {service_name}\n"  # Keep the service_name in the description
             f"Client Name: {client_name}\n"
             f"Phone: {phone_number}\n"
-            f"Email: {email_address}"
+            f"Email: {email}"
         )
 
         # Add event to calendar
@@ -123,8 +123,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # Return success response
         return func.HttpResponse(
             json.dumps({
-                "senderID": sender_id,
-                "result": f"Appointment scheduled with {client_name} for {service} on {start_time_str}",
+                "sender_id": sender_id,
+                "result": f"Appointment scheduled with {client_name} for service ID {service_name} on {start_time_str}",
                 "eventId": event.get('id')
             }),
             status_code=200,
@@ -132,10 +132,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     except Exception as e:
-        logging.error(f"Error in booking slot for senderID {sender_id}: {e}")
+        logging.error(f"Error in booking slot for sender_id {sender_id}: {e}")
         return func.HttpResponse(
             json.dumps({
-                "senderID": sender_id,
+                "sender_id": sender_id,
                 "error": str(e)
             }),
             status_code=500,

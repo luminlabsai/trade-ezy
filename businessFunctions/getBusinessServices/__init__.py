@@ -27,7 +27,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         sender_id = req_body.get("sender_id")
         business_id = req_body.get("business_id")
         fields = req_body.get("fields")  # Expecting a list of fields
-        service_name = req_body.get("service_name")  # Optional service name for filtering
+        service_name = req_body.get("service_name")  # Optional service_name for filtering
 
         # Validate required fields
         if not sender_id or not business_id:
@@ -41,8 +41,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logging.info(f"Request from sender_id: {sender_id} for business_id: {business_id}")
 
         # Allowed and default fields
-        allowed_fields = {"service_id", "name", "description", "duration_minutes", "price"}
-        default_fields = ["service_id", "name", "duration_minutes", "price"]  # Excluding description by default
+        allowed_fields = {"service_id", "service_name", "description", "duration_minutes", "price"}
+        default_fields = ["service_id", "service_name", "duration_minutes", "price"]  # Excluding description by default
 
         # Parse and validate fields
         if fields:
@@ -67,7 +67,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         query_params = [business_id]
 
         if service_name:
-            query += " AND name ILIKE %s"  # Case-insensitive match for service name
+            query += " AND service_name ILIKE %s"  # Case-insensitive match for service_name
             query_params.append(f"%{service_name.strip()}%")
 
         # Log the query for debugging
