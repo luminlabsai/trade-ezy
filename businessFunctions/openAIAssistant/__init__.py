@@ -793,6 +793,85 @@ def handle_book_slot(arguments, business_id, sender_id):
     """
     Handles the 'bookSlot' function call with pre-resolved arguments.
     """
+    # Resolve missing arguments from the database
+    arguments = resolve_missing_arguments(arguments, sender_id)
+
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
+        cursor = conn.cursor()
+
+        # Collect missing user details
+        missing_details = {
+            "clientName": arguments.get("clientName"),
+            "phone_number": arguments.get("phone_number"),
+            "email": arguments.get("email"),
+        }
+        missing_details = {key: value for key, value in missing_details.items() if not value}
+
+        # If there are missing details, return an error response
+        if missing_details:
+            return func.HttpResponse(
+                json.dumps({
+                    "error": "Missing user details.",
+                    "missing_details": {key: "Please provide this detail." for key in missing_details.keys()}
+                }),
+                status_code=400,
+                mimetype="application/json"
+            )
+
+        # Save user details to the database
+        try:
+            cursor.execute(
+                """
+                INSERT INTO users (sender_id, name, phone_number, email, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (sender_id) DO UPDATE
+                SET name = COALESCE(EXCLUDED.name, users.name),
+                    phone_number = COALESCE(EXCLUDED.phone_number, users.phone_number),
+                    email = COALESCE(EXCLUDED.email, users.email),
+                    updated_at = NOW()
+                """,
+                (sender_id, arguments["clientName"], arguments["phone_number"], arguments["email"])
+            )
+            conn.commit()
+        except Exception as e:
+            logging.error(f"Error saving user details: {e}")
+            return func.HttpResponse(
+                json.dumps({"error": "Failed to save user details. Please try again."}),
+                status_code=500,
+                mimetype="application/json"
+            )
+
+        # Verify that user details were saved
+        cursor.execute("SELECT name, phone_number, email FROM users WHERE sender_id = %s", (sender_id,))
+        user = cursor.fetchone()
+        if not user:
+            return func.HttpResponse(
+                json.dumps({"error": "User details could not be saved. Please try again."}),
+                status_code=500,
+                mimetype="application/json"
+            )
+
+        # Update arguments with saved details
+        arguments["clientName"] = user[0]
+        arguments["phone_number"] = user[1]
+        arguments["email"] = user[2]
+
+    except Exception as e:
+        logging.error(f"Error handling user details: {e}")
+        return func.HttpResponse(
+            json.dumps({"error": "An error occurred while handling user details.", "details": str(e)}),
+            status_code=500,
+            mimetype="application/json"
+        )
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
     # Validate the required arguments
     if not arguments.get("service_name"):
         return func.HttpResponse(
@@ -800,6 +879,7 @@ def handle_book_slot(arguments, business_id, sender_id):
             status_code=400,
             mimetype="application/json"
         )
+
 
     # Query the database for duration and other service details using service_name
     try:
@@ -869,10 +949,11 @@ def handle_book_slot(arguments, business_id, sender_id):
     except requests.RequestException as e:
         logging.error(f"Error calling bookSlot: {e}")
         return func.HttpResponse(
-            json.dumps({"error": "Failed to book slot. Please try again later."}),
+            json.dumps({"error": "Failed to boosk slot. Please try again later."}),
             status_code=500,
             mimetype="application/json"
         )
+
 
 
 
@@ -1189,27 +1270,42 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logging.info(f"Assistant raw response: {assistant_response}")
 
 
-        # Fallback: Check if 'content' contains a function_call-like JSON structure
+
+        # Check if content contains a function_call-like JSON structure
         if assistant_response.content and not assistant_response.function_call:
+            logging.warning("Assistant response contains a content field. Checking for potential function_call.")
             try:
-                # Attempt to parse the content as JSON
-                content_data = json.loads(assistant_response.content)
-                if "function_call" in content_data:
-                    function_call = content_data["function_call"]
-                    # Validate function_call structure
-                    if isinstance(function_call, dict) and "name" in function_call and "arguments" in function_call:
-                        logging.warning("Function call detected in the content field. Extracting it.")
-                        assistant_response.function_call = function_call
-                        assistant_response.content = None  # Clear the content field to prevent duplicate processing
+                # Log the raw content for debugging
+                logging.debug(f"Raw assistant_response.content: {assistant_response.content}")
+
+                # Validate if content is likely a JSON structure
+                if not assistant_response.content.strip().startswith("{"):
+                    logging.info("Content field is plain text, not JSON. Proceeding as a regular content response.")
+                else:
+                    # Attempt to parse the content as JSON
+                    content_data = json.loads(assistant_response.content)
+                    logging.debug(f"Parsed content_data: {content_data}")
+
+                    # Check if it contains a function_call field
+                    if "function_call" in content_data:
+                        function_call = content_data["function_call"]
+                        logging.debug(f"Extracted function_call: {function_call}")
+
+                        # Validate function_call structure
+                        if isinstance(function_call, dict) and "name" in function_call and "arguments" in function_call:
+                            logging.info("Valid function_call detected in the content field. Converting to proper structure.")
+                            assistant_response.function_call = function_call
+                            assistant_response.content = None  # Clear the content field to prevent duplicate processing
+                        else:
+                            logging.error("Malformed function_call structure in content field. Missing 'name' or 'arguments'.")
+                            raise ValueError("Malformed function_call structure.")
                     else:
-                        logging.error("Malformed function_call structure in content field.")
-                        raise ValueError("Malformed function_call structure.")
-            except json.JSONDecodeError:
-                logging.debug("Content does not contain JSON data. Proceeding as a regular response.")
-        elif assistant_response.content and assistant_response.function_call:
-            logging.warning("Assistant response contains both function_call and content field. Prioritizing function_call.")
-            # Log the inconsistency and proceed with the function_call field
-            logging.info(f"Ignoring redundant function call in content: {assistant_response.content}")
+                        logging.error("No 'function_call' key found in content_data.")
+                        raise ValueError("Content does not contain a valid function_call structure.")
+            except json.JSONDecodeError as e:
+                logging.error(f"Failed to parse assistant_response.content as JSON: {e}")
+            except Exception as e:
+                logging.error(f"Error processing function_call from content: {e}")
 
 
 
