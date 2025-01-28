@@ -1278,35 +1278,32 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 # Log the raw content for debugging
                 logging.debug(f"Raw assistant_response.content: {assistant_response.content}")
 
-                # Validate if content is likely a JSON structure
-                if not assistant_response.content.strip().startswith("{"):
-                    logging.info("Content field is plain text, not JSON. Proceeding as a regular content response.")
-                else:
+                # Validate if content is JSON
+                stripped_content = assistant_response.content.strip()
+                if stripped_content.startswith("{") and stripped_content.endswith("}"):
                     # Attempt to parse the content as JSON
-                    content_data = json.loads(assistant_response.content)
-                    logging.debug(f"Parsed content_data: {content_data}")
+                    try:
+                        content_data = json.loads(assistant_response.content)
+                        logging.debug(f"Parsed content_data: {content_data}")
 
-                    # Check if it contains a function_call field
-                    if "function_call" in content_data:
-                        function_call = content_data["function_call"]
-                        logging.debug(f"Extracted function_call: {function_call}")
-
-                        # Validate function_call structure
-                        if isinstance(function_call, dict) and "name" in function_call and "arguments" in function_call:
-                            logging.info("Valid function_call detected in the content field. Converting to proper structure.")
-                            assistant_response.function_call = function_call
-                            assistant_response.content = None  # Clear the content field to prevent duplicate processing
+                        # Check if it contains function_call-like data
+                        if "name" in content_data and "arguments" in content_data:
+                            logging.info("Valid function_call structure detected in content field. Converting to function_call.")
+                            assistant_response.function_call = {
+                                "name": content_data["name"],
+                                "arguments": json.dumps(content_data["arguments"])  # Serialize arguments
+                            }
+                            assistant_response.content = None  # Clear content field to avoid duplication
                         else:
-                            logging.error("Malformed function_call structure in content field. Missing 'name' or 'arguments'.")
-                            raise ValueError("Malformed function_call structure.")
-                    else:
-                        logging.error("No 'function_call' key found in content_data.")
-                        raise ValueError("Content does not contain a valid function_call structure.")
-            except json.JSONDecodeError as e:
-                logging.error(f"Failed to parse assistant_response.content as JSON: {e}")
+                            logging.warning("Content is JSON but does not contain a valid function_call structure.")
+                    except json.JSONDecodeError as e:
+                        logging.error(f"Failed to parse assistant_response.content as JSON: {e}")
+                else:
+                    # Content is plain text, not JSON
+                    logging.info("Content field is plain text. Proceeding as a regular content response.")
+
             except Exception as e:
                 logging.error(f"Error processing function_call from content: {e}")
-
 
 
         # Check for function_call and handle it
