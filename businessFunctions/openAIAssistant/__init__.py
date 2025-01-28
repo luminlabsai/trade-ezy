@@ -159,60 +159,6 @@ def store_chat_message(business_id, sender_id, role, content, message_type="form
 
 
 
-def preprocess_query(query, business_services=None):
-    """
-    Detects user intent and extracts relevant details from the query.
-
-    Args:
-        query (str): User's input query.
-        business_services (list): A list of service names relevant to the business.
-
-    Returns:
-        dict: Contains detected intent and extracted details.
-    """
-    # Define intent keywords and patterns
-    slot_keywords = ["book", "schedule", "reserve", "appointment"]
-    pricing_keywords = ["how much", "price", "cost"]
-    user_detail_keywords = ["name", "phone", "email", "contact", "reach me"]
-    date_time_pattern = r"\b(\d{1,2}(st|nd|rd|th)?\s\w+(\s\d{4})?\s?\d{1,2}(am|pm)?)\b"
-
-    # Initialize intent and details
-    intent = "general"
-    details = {}
-
-    query_lower = query.lower()
-
-    # Debugging: Log the query
-    logging.debug(f"Processing query: {query}")
-
-    # Detect intents
-    if any(keyword in query_lower for keyword in slot_keywords):
-        intent = "booking"
-    elif any(keyword in query_lower for keyword in pricing_keywords):
-        intent = "pricing"
-    elif any(keyword in query_lower for keyword in user_detail_keywords):
-        intent = "user_details"
-
-    # Process service name if the list is available
-    if business_services:
-        matched_service = process.extractOne(query_lower, business_services, scorer=process.fuzz.partial_ratio)
-        if matched_service and matched_service[1] > 70:  # Confidence threshold
-            details["service_name"] = matched_service[0]
-        elif intent == "pricing":
-            logging.warning("Pricing intent detected but no matching service name found.")
-            details["fallback_message"] = "I couldn't find the service you're asking about. Can you clarify?"
-    elif intent in ["pricing", "booking"]:
-        logging.warning("No business services provided for service name matching.")
-
-    # Extract date and time
-    date_time_match = re.search(date_time_pattern, query)
-    if date_time_match:
-        details["preferredDateTime"] = parse_date_time(date_time_match.group(0))
-
-    # Log the results
-    logging.info(f"Preprocessed query: Intent: {intent}, Details: {details}")
-
-    return {"intent": intent, "details": details}
 
 
 def parse_date_time(date_string):
@@ -229,9 +175,163 @@ def parse_date_time(date_string):
 
 
 
-
-
 # Service related helper functions
+def fetch_cached_services_from_db(sender_id):
+    """
+    Fetch cached services for the given sender_id from the PreloadedServices table.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT
+        )
+        cursor = conn.cursor()
+
+        # Query to fetch cached services
+        cursor.execute(
+            """
+            SELECT service_name, price, duration_minutes, description, business_id
+            FROM PreloadedServices
+            WHERE sender_id = %s
+            """,
+            (sender_id,)
+        )
+        rows = cursor.fetchall()
+
+        # Convert the rows to a list of dictionaries
+        cached_services = [
+            {
+                "service_name": row[0],
+                "price": row[1],
+                "duration_minutes": row[2],
+                "description": row[3],
+                "business_id": row[4]
+            }
+            for row in rows
+        ]
+
+        cursor.close()
+        conn.close()
+        logging.info(f"Fetched {len(cached_services)} cached services for sender_id: {sender_id}")
+        return cached_services
+
+    except psycopg2.Error as e:
+        logging.error(f"Database error while fetching cached services: {e}")
+        return []
+    except Exception as e:
+        logging.error(f"Unexpected error while fetching cached services: {e}")
+        return []
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+
+def fetch_and_store_services(business_id, sender_id):
+    """
+    Fetch all services for a business and store them in the PreloadedServices table.
+    """
+    try:
+        # Fetch services from the backend
+        response = requests.post(
+            "https://trade-ezy-businessfunctions.azurewebsites.net/api/getBusinessServices",
+            json={
+                "business_id": business_id,
+                "sender_id": sender_id
+            }
+        )
+
+        if response.status_code == 200:
+            services = response.json().get("services", [])
+            logging.info(f"Fetched {len(services)} services for business_id: {business_id}")
+
+            # Add business_id explicitly to each service
+            for service in services:
+                service["business_id"] = business_id
+
+            # Store services in the database
+            store_services_in_db(sender_id, services)
+        else:
+            logging.error(f"Failed to fetch services. Status code: {response.status_code}")
+            raise Exception(f"Service fetch failed with status code {response.status_code}")
+
+    except Exception as e:
+        logging.error(f"Error in fetch_and_store_services: {e}", exc_info=True)
+
+
+
+def are_services_cached(sender_id):
+    """
+    Check if services are already cached for the given sender_id.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT
+        )
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM PreloadedServices WHERE sender_id = %s", (sender_id,))
+        count = cursor.fetchone()[0]
+        cursor.close()
+        conn.close()
+        return count > 0
+    except psycopg2.Error as e:
+        logging.error(f"Database error while checking cache: {e}")
+        return False
+
+
+
+def store_services_in_db(sender_id, services):
+    """
+    Store services in the PreloadedServices table.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT
+        )
+        cursor = conn.cursor()
+
+        # Delete any existing services for the sender_id
+        cursor.execute("DELETE FROM PreloadedServices WHERE sender_id = %s", (sender_id,))
+
+        # Insert the new services
+        for service in services:
+            cursor.execute(
+                """
+                INSERT INTO PreloadedServices (sender_id, business_id, service_name, price, duration_minutes, description)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    sender_id,
+                    service["business_id"],  # Ensure business_id is included
+                    service.get("service_name"),
+                    service.get("price"),
+                    service.get("duration_minutes"),
+                    service.get("description")
+                )
+            )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logging.info(f"Stored {len(services)} services for sender_id: {sender_id}")
+
+    except psycopg2.Error as e:
+        logging.error(f"Database error while storing services: {e}")
+
+
 def serialize_services_as_text(business_services):
     """
     Serializes a list of business services into a human-readable text format.
@@ -256,14 +356,12 @@ def serialize_services_as_text(business_services):
 
 
 def serialize_service_details_as_text(service_details):
-    """
-    Serializes a single service's details into a human-readable text format.
-    """
     return (
-        f"Service: {service_details['name']}\n"
+        f"Service: {service_details['service_name']}\n"
         f"Price: ${service_details['price']}\n"
         f"Duration: {service_details['duration_minutes']} mins\n"
     )
+
 
 def extract_service_name_from_id(service_id):
     """
@@ -606,7 +704,6 @@ def get_active_booking(sender_id, business_id):
 
 
 # Endpoint handlers
-
 def handle_get_business_services(arguments, business_id, sender_id):
     """
     Handles the 'getBusinessServices' function call, fetching details for all or specific services.
@@ -614,78 +711,41 @@ def handle_get_business_services(arguments, business_id, sender_id):
     logging.info("Entered handle_get_business_services function.")
     logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
 
-    # Ensure the endpoint is configured
-    endpoint = function_endpoints.get("getBusinessServices")
-    if not endpoint:
-        logging.error("Endpoint for getBusinessServices is not configured.")
-        raise ValueError("Endpoint for getBusinessServices is not configured.")
+    # Check for cached services
+    cached_services = fetch_cached_services_from_db(sender_id)
+    if not cached_services:
+        logging.info(f"No cached services found for sender_id: {sender_id}. Fetching from backend.")
+        fetch_and_store_services(business_id, sender_id)
+        cached_services = fetch_cached_services_from_db(sender_id)  # Fetch again after storing
 
-    # Fetch all available business services
-    try:
-        logging.info("Fetching business services from the endpoint.")
-        response = requests.post(
-            endpoint,
-            json={
-                "business_id": business_id,
-                "sender_id": sender_id,
-                "fields": ["service_id", "service_name", "price", "duration_minutes"]
-            }
+    if not cached_services:
+        error_message = "Failed to fetch or cache services for this business."
+        logging.error(error_message)
+        return func.HttpResponse(error_message, status_code=500, mimetype="text/plain")
+
+    # Filter services if 'service_name' is provided
+    service_name = arguments.get("service_name", "").strip().lower()
+    if service_name:
+        matched_service = next(
+            (s for s in cached_services if s["service_name"].strip().lower() == service_name),
+            None
         )
-        response.raise_for_status()
-        business_services = response.json().get("services", [])
-
-        if not business_services:
-            logging.warning("No business services found for this business.")
-            follow_up_message = "I couldn't find any services listed for this business. Please try again later."
-            store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
-            return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
-        logging.debug(f"Fetched business services: {business_services}")
-
-    except requests.RequestException as e:
-        logging.error(f"Error fetching business services: {e}")
-        return func.HttpResponse(
-            "Failed to fetch business services. Please try again later.",
-            status_code=500,
-            mimetype="text/plain"
-        )
-
-    # Extract and preprocess user query
-    user_query = arguments.get("query", "").strip().lower()
-    if not user_query:
-        logging.info("User query is empty. Returning all business services.")
-        services_response = serialize_services_as_text(business_services)
-        store_chat_message(business_id, sender_id, "assistant", services_response, "formatted")
-        return func.HttpResponse(services_response, status_code=200, mimetype="text/plain")
-
-    logging.info(f"Processing user query: {user_query}")
-
-    # Pass available business services to preprocess_query
-    available_service_names = [service["service_name"] for service in business_services]
-    preprocessed_query = preprocess_query(user_query, available_service_names)
-    intent = preprocessed_query["intent"]
-    details = preprocessed_query["details"]
-
-    # Handle pricing intent with missing service name
-    if intent == "pricing" and "service_name" not in details:
-        logging.warning("Pricing intent detected but no service name matched.")
-        fallback_message = details.get("fallback_message", "I couldn't understand your request. Please try again.")
-        store_chat_message(business_id, sender_id, "assistant", fallback_message, "formatted")
-        return func.HttpResponse(fallback_message, status_code=200, mimetype="text/plain")
-
-    # Handle cases where a specific service is matched
-    if "service_name" in details:
-        matched_service_name = details["service_name"].lower()
-        service_details = next((s for s in business_services if s["service_name"].lower() == matched_service_name), None)
-
-        if service_details:
-            service_message = serialize_service_details_as_text(service_details)
+        if matched_service:
+            # Serialize and return the matched service
+            service_message = serialize_service_details_as_text(matched_service)
             store_chat_message(business_id, sender_id, "assistant", service_message, "formatted")
             return func.HttpResponse(service_message, status_code=200, mimetype="text/plain")
+        else:
+            # If no match is found, notify the user
+            no_match_message = f"I couldn't find a service matching '{service_name}'. Please try another query."
+            store_chat_message(business_id, sender_id, "assistant", no_match_message, "formatted")
+            return func.HttpResponse(no_match_message, status_code=200, mimetype="text/plain")
 
-    # If no specific service is matched, return all services as a human-readable list
-    services_response = serialize_services_as_text(business_services)
+    # If no specific service is provided, return all services
+    services_response = serialize_services_as_text(cached_services)
     store_chat_message(business_id, sender_id, "assistant", services_response, "formatted")
     return func.HttpResponse(services_response, status_code=200, mimetype="text/plain")
+
 
 
 
@@ -1128,7 +1188,15 @@ def extract_service_name_from_query(user_query, business_services):
 
 
 def handle_function_call(assistant_response, business_id, sender_id):
+    """
+    Handles the function call requested by the AI assistant.
+    """
     try:
+        # Ensure services are preloaded (silent fetch if not already cached)
+        if not are_services_cached(sender_id):
+            logging.info(f"Services not cached for sender_id: {sender_id}. Fetching silently.")
+            fetch_and_store_services(business_id, sender_id)
+
         # Extract the function_call object
         function_call = assistant_response.function_call
 
@@ -1140,6 +1208,7 @@ def handle_function_call(assistant_response, business_id, sender_id):
         # Extract function name and arguments
         function_name = function_call.name
         try:
+            # Parse arguments (handle both dict and JSON string formats)
             arguments = (
                 function_call.arguments if isinstance(function_call.arguments, dict)
                 else json.loads(function_call.arguments)
@@ -1157,7 +1226,7 @@ def handle_function_call(assistant_response, business_id, sender_id):
         logging.info(f"Function name: {function_name}")
         logging.info(f"Function arguments before resolution: {arguments}")
 
-        # Handle specific function calls
+        # Dispatch to the appropriate handler based on function_name
         if function_name == "create_or_update_user":
             logging.info(f"Dispatching to handle_create_or_update_user with arguments: {arguments}")
             return handle_create_or_update_user(arguments, business_id, sender_id)
@@ -1191,9 +1260,6 @@ def handle_function_call(assistant_response, business_id, sender_id):
             status_code=500,
             mimetype="application/json"
         )
-
-
-
 
 
 

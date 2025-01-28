@@ -1,10 +1,11 @@
 function_descriptions = [
-    {
+        {
         "name": "getBusinessServices",
         "description": (
-            "Retrieve details about the services a business offers. Use this to list or search for services "
-            "offered by the business. If no `fields` or `service_name` is provided, defaults to fetching basic details "
-            "for all services."
+            "Retrieve details about the services a business offers. Use this function to list all services or to search "
+            "for specific services by name. You can query additional details like cost, duration, or descriptions by "
+            "specifying fields in the request. If no `fields` or `service_name` is provided, the function will return "
+            "basic details (service_name, duration_minutes, and price) for all services offered by the business."
         ),
         "parameters": {
             "type": "object",
@@ -13,20 +14,25 @@ function_descriptions = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Fields to retrieve (e.g., service_name, price). Defaults to excluding descriptions. "
-                        "Include 'description' in the fields to fetch service descriptions."
+                        "A list of fields to retrieve for each service. Valid fields include 'service_id', 'service_name', "
+                        "'description', 'duration_minutes', and 'price'. Defaults to basic details (service_name, "
+                        "duration_minutes, and price) if not specified. Include 'description' to fetch full service "
+                        "descriptions."
                     )
                 },
                 "service_name": {
                     "type": "string",
                     "description": (
-                        "Optional service name to filter results. Use this to find a specific service by name."
+                        "An optional parameter to filter results by a specific service name. Use this to find details "
+                        "about a particular service (e.g., cost, duration) or to check if the service is offered by the "
+                        "business. Case-insensitive partial matches are supported."
                     )
                 }
             },
-            "required": []
+            "required": ["sender_id", "business_id"]
         }
     },
+
     {
         "name": "checkSlot",
         "description": (
@@ -39,7 +45,7 @@ function_descriptions = [
                 "service_name": {"type": "string", "description": "The name of the service to check."},
                 "preferredDateTime": {"type": "string", "description": "The preferred date and time for the slot."},
                 "durationMinutes": {"type": "integer", "description": "Duration of the service in minutes."},
-                "business_id": {"type": "string", "description": "The ID of the business offering the service."}
+                "business_id": {"type": "string", "description": "The ID of the business offering the service."},
             },
             "required": ["service_name", "preferredDateTime", "durationMinutes", "business_id"]
         }
