@@ -6,6 +6,7 @@ import json
 import azure.functions as func
 import psycopg2
 import string
+import decimal
 from rapidfuzz import process
 from uuid import uuid4
 from urllib.parse import quote
@@ -704,6 +705,55 @@ def get_active_booking(sender_id, business_id):
 
 
 # Endpoint handlers
+def send_response_to_ai(raw_response, business_id, sender_id, function_name, fallback_message="I'm sorry, I couldn't process your request."):
+    """
+    Pass the raw response (e.g., from a function or database query) back to the AI for natural language formatting.
+    """
+
+    def decimal_to_float(obj):
+        """ Convert Decimal to float for JSON serialization """
+        if isinstance(obj, decimal.Decimal):
+            return float(obj)
+        raise TypeError
+
+    try:
+        # Fetch chat history
+        chat_history = fetch_chat_history(business_id, sender_id)
+        messages = [{"role": message["role"], "content": message["content"]} for message in chat_history]
+
+        # Append the raw response as a function role message with a name
+        messages.append({
+            "role": "function",
+            "name": function_name,  # This must be explicitly set
+            "content": json.dumps(raw_response, default=decimal_to_float)
+        })
+
+        # Send to OpenAI for formatting
+        logging.info(f"Sending raw response to AI for natural language formatting.")
+        response = openai.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages,
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=800,
+            user=ASSISTANT_ID
+        )
+
+        formatted_response = response.choices[0].message.content
+        logging.info(f"AI-formatted response: {formatted_response}")
+
+        # Store and return the formatted response
+        store_chat_message(business_id, sender_id, "assistant", formatted_response, "formatted")
+        return func.HttpResponse(formatted_response, status_code=200, mimetype="text/plain")
+
+    except Exception as e:
+        logging.error(f"Error sending response to AI: {e}")
+        return func.HttpResponse(fallback_message, status_code=200, mimetype="text/plain")
+
+
+
+
+
 def handle_get_business_services(arguments, business_id, sender_id):
     """
     Handles the 'getBusinessServices' function call, fetching details for all or specific services.
@@ -711,41 +761,44 @@ def handle_get_business_services(arguments, business_id, sender_id):
     logging.info("Entered handle_get_business_services function.")
     logging.debug(f"Arguments received: {arguments}, BusinessID: {business_id}, SenderID: {sender_id}")
 
-    # Check for cached services
+    # Fetch cached services
     cached_services = fetch_cached_services_from_db(sender_id)
     if not cached_services:
         logging.info(f"No cached services found for sender_id: {sender_id}. Fetching from backend.")
-        fetch_and_store_services(business_id, sender_id)
-        cached_services = fetch_cached_services_from_db(sender_id)  # Fetch again after storing
+        cached_services = fetch_and_store_services(business_id, sender_id)
 
-    if not cached_services:
-        error_message = "Failed to fetch or cache services for this business."
-        logging.error(error_message)
-        return func.HttpResponse(error_message, status_code=500, mimetype="text/plain")
+    logging.info(f"Fetched {len(cached_services)} cached services for sender_id: {sender_id}")
 
-    # Filter services if 'service_name' is provided
-    service_name = arguments.get("service_name", "").strip().lower()
+    # If a specific service_name is provided, filter the results
+    service_name = arguments.get("service_name", "").lower()
     if service_name:
         matched_service = next(
-            (s for s in cached_services if s["service_name"].strip().lower() == service_name),
+            (s for s in cached_services if s["service_name"].lower() == service_name),
             None
         )
         if matched_service:
-            # Serialize and return the matched service
             service_message = serialize_service_details_as_text(matched_service)
             store_chat_message(business_id, sender_id, "assistant", service_message, "formatted")
-            return func.HttpResponse(service_message, status_code=200, mimetype="text/plain")
-        else:
-            # If no match is found, notify the user
-            no_match_message = f"I couldn't find a service matching '{service_name}'. Please try another query."
-            store_chat_message(business_id, sender_id, "assistant", no_match_message, "formatted")
-            return func.HttpResponse(no_match_message, status_code=200, mimetype="text/plain")
+
+            # **Pass function_name explicitly**
+            return send_response_to_ai(
+                raw_response=matched_service,
+                business_id=business_id,
+                sender_id=sender_id,
+                function_name="getBusinessServices"
+            )
 
     # If no specific service is provided, return all services
     services_response = serialize_services_as_text(cached_services)
     store_chat_message(business_id, sender_id, "assistant", services_response, "formatted")
-    return func.HttpResponse(services_response, status_code=200, mimetype="text/plain")
 
+    # **Pass function_name explicitly**
+    return send_response_to_ai(
+        raw_response=cached_services,
+        business_id=business_id,
+        sender_id=sender_id,
+        function_name="getBusinessServices"
+    )
 
 
 
@@ -1413,35 +1466,3 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # Functions not in use now
-
-def send_response_to_ai(system_message, business_id, sender_id, fallback_message):
-    """
-    Pass the system response back to the AI for natural language formatting.
-    """
-    try:
-        # Fetch chat history
-        chat_history = fetch_chat_history(business_id, sender_id)
-        messages = [{"role": message["role"], "content": message["content"]} for message in chat_history]
-        messages.append(system_message)
-
-        # Send to OpenAI
-        logging.info(f"Sending response to AI for natural language formatting.")
-        response = openai.chat.completions.create(
-            model=LLM_MODEL,
-            messages=messages,
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=800,
-            user=ASSISTANT_ID
-        )
-
-        formatted_response = response.choices[0].message.content
-        logging.info(f"AI formatted response: {formatted_response}")
-        store_chat_message(business_id, sender_id, "assistant", formatted_response, "formatted")
-        return func.HttpResponse(formatted_response, status_code=200, mimetype="text/plain")
-
-    except Exception as e:
-        logging.error(f"Error sending response to AI: {e}")
-        return func.HttpResponse(fallback_message, status_code=200, mimetype="text/plain")
-
-
