@@ -705,9 +705,12 @@ def get_active_booking(sender_id, business_id):
 
 
 # Endpoint handlers
+import decimal
+
 def send_response_to_ai(raw_response, business_id, sender_id, function_name, fallback_message="I'm sorry, I couldn't process your request."):
     """
     Pass the raw response (e.g., from a function or database query) back to the AI for natural language formatting.
+    Ensures proper readability for Meta Messenger and other platforms.
     """
 
     def decimal_to_float(obj):
@@ -721,6 +724,17 @@ def send_response_to_ai(raw_response, business_id, sender_id, function_name, fal
         chat_history = fetch_chat_history(business_id, sender_id)
         messages = [{"role": message["role"], "content": message["content"]} for message in chat_history]
 
+        # Ensure formatting instructions for Meta compatibility
+        formatting_instructions = (
+            "Format the response for clarity:\n"
+            "- Use **bullet points (- )** for lists (e.g., services).\n"
+            "- Ensure **newlines** (`\n\n`) for readability.\n"
+            "- Keep it conversational and natural."
+        )
+
+        # Append system message to enforce formatting
+        messages.append({"role": "system", "content": formatting_instructions})
+
         # Append the raw response as a function role message with a name
         messages.append({
             "role": "function",
@@ -731,7 +745,7 @@ def send_response_to_ai(raw_response, business_id, sender_id, function_name, fal
         # Send to OpenAI for formatting
         logging.info(f"Sending raw response to AI for natural language formatting.")
         response = openai.chat.completions.create(
-            model=LLM_MODEL,
+            model="gpt-3.5-turbo-1106",
             messages=messages,
             temperature=0.7,
             top_p=0.95,
@@ -749,6 +763,7 @@ def send_response_to_ai(raw_response, business_id, sender_id, function_name, fal
     except Exception as e:
         logging.error(f"Error sending response to AI: {e}")
         return func.HttpResponse(fallback_message, status_code=200, mimetype="text/plain")
+
 
 
 
