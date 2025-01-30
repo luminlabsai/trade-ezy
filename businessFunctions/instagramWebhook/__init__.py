@@ -3,10 +3,23 @@ import json
 import os
 import requests
 import azure.functions as func
+from userMappingService import get_or_create_sender_id
 
 # Load Meta App Credentials from Environment Variables
 VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN")
 PAGE_ACCESS_TOKEN = os.getenv("META_PAGE_ACCESS_TOKEN")
+
+
+
+def process_instagram_message(instagram_id, message_text):
+    sender_id = get_or_create_sender_id(instagram_id)
+    if sender_id:
+        print(f"Mapped Instagram user {instagram_id} to sender_id {sender_id}")
+        # Pass sender_id to OpenAI or next processing step
+    else:
+        print("Failed to retrieve or create sender_id")
+
+
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("Received Instagram webhook request.")
