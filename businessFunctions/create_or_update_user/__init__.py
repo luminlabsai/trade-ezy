@@ -10,16 +10,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Parse the incoming request payload
         req_body = req.get_json()
-        sender_id = req_body.get("sender_id")  # Extract sender_id from the payload
+        sender_id = req_body.get("sender_id")  # ✅ Expecting a UUID
         name = req_body.get("name")
         phone_number = req_body.get("phone_number")
         email = req_body.get("email")
 
         # Validate required parameters
-        if not sender_id:
-            logging.warning("Missing required 'sender_id' in the payload.")
+        if not sender_id or "-" not in sender_id:  # Ensure it's a UUID
+            logging.warning(f"🚨 Invalid or missing UUID for sender_id: {sender_id}")
             return func.HttpResponse(
-                json.dumps({"error": "Missing required 'sender_id'."}),
+                json.dumps({"error": "Invalid sender_id. Expected a UUID."}),
                 status_code=400,
                 mimetype="application/json"
             )
@@ -30,17 +30,17 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             user=os.getenv("DB_USER"),
             password=os.getenv("DB_PASSWORD"),
             host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT")
+            port=os.getenv("DB_PORT"),
+            connect_timeout=30  # Timeout in seconds
         )
         cursor = conn.cursor()
 
-        # Check if the user exists
-        select_query = "SELECT sender_id FROM users WHERE sender_id = %s"
-        cursor.execute(select_query, (sender_id,))
-        user_exists = cursor.fetchone()
+        # ✅ Check if user exists before updating
+        cursor.execute("SELECT COUNT(*) FROM users WHERE sender_id = %s", (sender_id,))
+        user_exists = cursor.fetchone()[0] > 0
 
         if user_exists:
-            # Update user details
+            # ✅ Update existing user
             update_query = """
                 UPDATE users
                 SET name = COALESCE(%s, name),
@@ -48,29 +48,25 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     email = COALESCE(%s, email),
                     updated_at = NOW()
                 WHERE sender_id = %s
-                RETURNING sender_id;
             """
             cursor.execute(update_query, (name, phone_number, email, sender_id))
-            conn.commit()
-            logging.info(f"User details updated successfully for sender_id: {sender_id}")
-            action = "updated"
+            logging.info(f"✅ Updated existing user: {sender_id}")
         else:
-            # Create a new user
+            # ✅ Insert new user
             insert_query = """
                 INSERT INTO users (sender_id, name, phone_number, email, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, NOW(), NOW())
             """
             cursor.execute(insert_query, (sender_id, name, phone_number, email))
-            conn.commit()
-            logging.info(f"New user created successfully with sender_id: {sender_id}")
-            action = "created"
+            logging.info(f"✅ Created new user: {sender_id}")
+
+        conn.commit()  # ✅ Ensure transaction commits
 
         # Build the response
         response = {
-            "message": f"User {action} successfully.",
-            "action": action,
+            "message": "User processed successfully.",
             "user": {
-                "sender_id": sender_id,
+                "sender_id": sender_id,  # ✅ Always a UUID
                 "name": name,
                 "phone_number": phone_number,
                 "email": email
@@ -83,7 +79,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     except (Exception, psycopg2.Error) as e:
-        logging.error(f"Error in create_or_update_user: {e}")
+        logging.error(f"❌ Error in create_or_update_user: {e}")
         return func.HttpResponse(
             json.dumps({"error": "Internal server error.", "details": str(e)}),
             status_code=500,
