@@ -8,6 +8,9 @@ def get_system_instructions(business_id):
         f"   - Respond with the `function_call` field **only**, without any additional text, explanations, or backticks. "
         f"   - Always include the correct `sender_id` and `business_id` in function calls. Use the provided values exactly as they are."
         f"   - Examples of correct function calls: "
+        f'   - When a user asks "What is [service name]?", respond with a general explanation instead of calling functions. '
+        f'   - If a user asks "How much is [service name]?" or "What is the duration of [service name]?", then call `getBusinessServices`.'
+        f"   - Avoid unnecessary function calls when an answer can be generated from knowledge."
         f'     For `create_or_update_user`: ChatCompletionMessage(content=None, role="assistant", function_call={{"name": "create_or_update_user", "arguments": {{"name": "John", "phone_number": "9876543210", "email": "john.doe@example.com", "sender_id": "{{sender_id}}"}}}})'
         f'     For `checkSlot`: ChatCompletionMessage(content=None, role="assistant", function_call={{"name": "checkSlot", "arguments": {{"service_name": "Yoga Class", "preferredDateTime": "2024-02-02T15:00:00", "durationMinutes": 60, "business_id": "b3789a3d-8f94-4c36-925e-c4739dc5d5e6", "sender_id": "{{sender_id}}"}}}})'
         f'     For `bookSlot`: ChatCompletionMessage(content=None, role="assistant", function_call={{"name": "bookSlot", "arguments": {{"service_name": "Yoga Class", "preferredDateTime": "2024-02-02T15:00:00", "durationMinutes": 60, "business_id": "b3789a3d-8f94-4c36-925e-c4739dc5d5e6", "sender_id": "{{sender_id}}", "clientName": "John", "phone_number": "9876543210", "email": "john.doe@example.com"}}}})'

@@ -20,6 +20,7 @@ from function_endpoints import function_endpoints
 
 # Configuration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "MISSING_KEY")
+OPENAI_PROJECT_ID = os.getenv("OPENAI_PROJECT_ID", "MISSING_PROJECT") 
 ASSISTANT_ID = "asst_x0xrh7dShxqC0eBHfIuunn1L"
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4")
 CHAT_HISTORY_LIMIT = int(os.getenv("CHAT_HISTORY_LIMIT", 10))
@@ -32,6 +33,7 @@ DB_PORT = os.getenv("DB_PORT", 5432)
 if OPENAI_API_KEY == "MISSING_KEY":
     raise ValueError("OPENAI_API_KEY environment variable is not set.")
 openai.api_key = OPENAI_API_KEY
+
 
 
 
