@@ -31,6 +31,7 @@ dist
 # Python Environments
 .env
 .venv*
+.venv-meta
 env/
 venv/
 ENV/

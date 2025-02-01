@@ -1,4 +1,25 @@
 !__init__.py
 
 
-.venv
+.venv# Ignore virtual environment
+.venv/
+.venv310
+
+# Ignore local settings (should not be deployed)
+local.settings.json
+
+# Ignore VS Code settings
+.vscode/
+
+# Ignore compiled Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore logs
+logs/
+*.log
+
+# Ignore environment files
+.env
