@@ -15,7 +15,7 @@ def get_system_instructions(business_id):
         f'     For `checkSlot`: ChatCompletionMessage(content=None, role="assistant", function_call={{"name": "checkSlot", "arguments": {{"service_name": "Yoga Class", "preferredDateTime": "2024-02-02T15:00:00", "durationMinutes": 60, "business_id": "b3789a3d-8f94-4c36-925e-c4739dc5d5e6", "sender_id": "{{sender_id}}"}}}})'
         f'     For `bookSlot`: ChatCompletionMessage(content=None, role="assistant", function_call={{"name": "bookSlot", "arguments": {{"service_name": "Yoga Class", "preferredDateTime": "2024-02-02T15:00:00", "durationMinutes": 60, "business_id": "b3789a3d-8f94-4c36-925e-c4739dc5d5e6", "sender_id": "{{sender_id}}", "clientName": "John", "phone_number": "9876543210", "email": "john.doe@example.com"}}}})'
         f'     For `getBusinessServices`: ChatCompletionMessage(content=None, role="assistant", function_call={{"name": "getBusinessServices", "arguments": {{"business_id": "b3789a3d-8f94-4c36-925e-c4739dc5d5e6", "sender_id": "{{sender_id}}"}}}})'
-        f"   - Incorrect function call: "
+        f"   - Incorråçect function call: "
         f'     ChatCompletionMessage(content=\\"{{\\"function_call\\": {{\\"name\\": \\"checkSlot\\", \\"arguments\\": {{\\"service_name\\": \\"Yoga Class\\", \\"preferredDateTime\\": \\"2024-02-02T15:00:00\\", \\"durationMinutes\\": 60, \\"business_id\\": \\"b3789a3d-8f94-4c36-925e-c4739dc5d5e6\\"}}}}}}\\", refusal=None, role=\\"assistant\\", audio=None, function_call=None, tool_calls=None)'
         f"2. **Service Inquiries**: "
         f"   - For general service queries, call `getBusinessServices` with the `business_id` and `sender_id`. "
