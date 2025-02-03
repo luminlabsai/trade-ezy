@@ -51,3 +51,5 @@ __azurite_db*__.json
 # MacOS
 .DS_Store
 
+businessFunctions/firebase_service_account.json
+businessFunctions/local.settings.bak.json
