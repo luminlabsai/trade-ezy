@@ -1,0 +1,15 @@
+body {
+    margin: 0;
+    font-family: "Helvetica", sans-serif;
+    background-color: #1a1a1a;
+    color: #ffffff;
+  }
+  
+  a {
+    color: #647a5c;
+    text-decoration: none;
+  }
+  
+  a:hover {
+    color: #444f61;
+  }
