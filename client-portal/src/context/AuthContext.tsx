@@ -27,30 +27,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
       setCurrentUser(user);
-
+  
       if (user) {
         try {
           const idToken = await user.getIdToken();
-
+  
+          // ✅ Only log in development mode, and remove the UID for security
           if (import.meta.env.MODE === "development") {
-            console.log("🔍 Debug: Firebase Authenticated User:", user.uid);
+            console.log("🔍 Debug: Firebase Authenticated User detected");
           }
-
+  
           const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/getBusinessId`, {
             headers: {
               Authorization: `Bearer ${idToken}`,
               "Content-Type": "application/json",
             },
           });
-
+  
           if (!response.ok) throw new Error("Failed to fetch Business ID");
-
+  
           const data = await response.json();
-
+  
           if (import.meta.env.MODE === "development") {
             console.log("🔍 Debug: Business ID Retrieved");
           }
-
+  
           setBusinessId(data.business_id);
         } catch (error) {
           console.error("🚨 Error fetching business ID:", error);
@@ -60,9 +61,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setBusinessId(null);
       }
     });
-
+  
     return unsubscribe;
   }, []);
+  
 
   return (
     <AuthContext.Provider value={{ currentUser, businessId, getIdToken }}>

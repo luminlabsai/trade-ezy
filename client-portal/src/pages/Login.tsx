@@ -8,8 +8,12 @@ const Login: React.FC = () => {
 
   const handleGoogleLogin = async () => {
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      console.log("Logged in user:", result.user);
+      await signInWithPopup(auth, googleProvider);
+
+      if (import.meta.env.MODE === "development") {
+        console.log("🔍 Debug: User logged in successfully");
+      }
+      
       navigate("/dashboard"); // Redirect to dashboard after successful login
     } catch (error) {
       console.error("Error during login:", error);
