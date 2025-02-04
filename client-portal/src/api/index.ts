@@ -1,21 +1,32 @@
 import axios from "axios";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+// ✅ Two base URLs for different function apps
+const API_AUTH_BASE_URL = import.meta.env.VITE_API_BASE_URL; // 7071 for authentication
+const API_SERVICES_BASE_URL = import.meta.env.VITE_API_BASE_URL2; // 7075 for business services
 
-export const api = axios.create({
-  baseURL: API_BASE_URL,
-  headers: {
-    "Content-Type": "application/json",
-  },
+// ✅ Axios instances for both function apps
+export const authApi = axios.create({
+  baseURL: API_AUTH_BASE_URL,
+  headers: { "Content-Type": "application/json" },
 });
 
-// ✅ Export getServices function
+export const servicesApi = axios.create({
+  baseURL: API_SERVICES_BASE_URL,
+  headers: { "Content-Type": "application/json" },
+});
+
+// ✅ Re-export for compatibility
+export const api = authApi; 
+
+// ✅ Function to get services for a business
 export const getServices = async (businessId: string) => {
   try {
-    const response = await api.get(`/api/getBusinssServices?business_id=${businessId}`);
+    const response = await servicesApi.get(`/api/manageBusinessServices`, {
+      params: { business_id: businessId },
+    });
     return response.data;
   } catch (error) {
-    console.error("Error fetching services:", error);
+    console.error("🚨 Error fetching services:", error);
     throw error;
   }
 };

@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { auth } from "../firebase";
-import { api } from "../api";
 
 interface AuthContextType {
   currentUser: any;
@@ -31,21 +30,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (user) {
         try {
-          const idToken = await user.getIdToken(true);
+          const idToken = await user.getIdToken();
           console.log("🔥 Firebase ID Token:", idToken);
 
-
-          const response = await api.get("/api/getBusinessId", {
+          const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/getBusinessId`, {
             headers: {
               Authorization: `Bearer ${idToken}`,
               "Content-Type": "application/json",
             },
           });
 
-          console.log("✅ Business ID Response:", response.data);
-          setBusinessId(response.data.business_id);
+          if (!response.ok) throw new Error("Failed to fetch Business ID");
+
+          const data = await response.json();
+          console.log("✅ Business ID Response:", data);
+          setBusinessId(data.business_id);
         } catch (error) {
-          console.error("🚨 Error fetching business ID:", error.response?.data || error.message);
+          console.error("🚨 Error fetching business ID:", error);
           setBusinessId(null);
         }
       } else {
