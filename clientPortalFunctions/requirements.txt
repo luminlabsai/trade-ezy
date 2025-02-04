@@ -4,5 +4,7 @@
 
 azure-functions
 psycopg2-binary
-logging
 jsonschema
+firebase-admin
+
+

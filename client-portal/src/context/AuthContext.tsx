@@ -31,7 +31,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (user) {
         try {
           const idToken = await user.getIdToken();
-          console.log("🔥 Firebase ID Token:", idToken);
+
+          if (import.meta.env.MODE === "development") {
+            console.log("🔍 Debug: Firebase Authenticated User:", user.uid);
+          }
 
           const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/getBusinessId`, {
             headers: {
@@ -43,7 +46,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (!response.ok) throw new Error("Failed to fetch Business ID");
 
           const data = await response.json();
-          console.log("✅ Business ID Response:", data);
+
+          if (import.meta.env.MODE === "development") {
+            console.log("🔍 Debug: Business ID Retrieved");
+          }
+
           setBusinessId(data.business_id);
         } catch (error) {
           console.error("🚨 Error fetching business ID:", error);

@@ -1,4 +1,7 @@
 {
+    "terminal.integrated.env.osx": {
+        "GOOGLE_APPLICATION_CREDENTIALS": "/path/to/your/firebase-key.json"
+    },
     "recommendations": [
         "ms-azuretools.vscode-azurefunctions"
     ]

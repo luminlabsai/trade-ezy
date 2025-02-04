@@ -1,8 +1,8 @@
 import axios from "axios";
 
 // ✅ Two base URLs for different function apps
-const API_AUTH_BASE_URL = import.meta.env.VITE_API_BASE_URL; // 7071 for authentication
-const API_SERVICES_BASE_URL = import.meta.env.VITE_API_BASE_URL2; // 7075 for business services
+const API_AUTH_BASE_URL = import.meta.env.VITE_API_BASE_URL; 
+const API_SERVICES_BASE_URL = import.meta.env.VITE_API_BASE_URL; 
 
 // ✅ Axios instances for both function apps
 export const authApi = axios.create({
