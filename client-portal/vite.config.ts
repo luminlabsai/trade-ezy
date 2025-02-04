@@ -1,5 +1,5 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
@@ -12,5 +12,9 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
-  },
+    headers: {
+      "Cross-Origin-Opener-Policy": "unsafe-none",  // Loosens restrictions for popups
+      "Cross-Origin-Embedder-Policy": "unsafe-none" // Allows external popups to work
+    }
+  }
 });

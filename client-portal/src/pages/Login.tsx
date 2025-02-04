@@ -9,9 +9,8 @@ const Login: React.FC = () => {
   const handleGoogleLogin = async () => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
-      console.log("Logged in user:", user);
-      navigate("/dashboard"); // Redirect to the dashboard after login
+      console.log("Logged in user:", result.user);
+      navigate("/dashboard"); // Redirect to dashboard after successful login
     } catch (error) {
       console.error("Error during login:", error);
     }
