@@ -13,7 +13,7 @@ const Login: React.FC = () => {
       if (import.meta.env.MODE === "development") {
         console.log("🔍 Debug: User logged in successfully");
       }
-      
+
       navigate("/dashboard"); // Redirect to dashboard after successful login
     } catch (error) {
       console.error("Error during login:", error);
@@ -21,7 +21,15 @@ const Login: React.FC = () => {
   };
 
   return (
-    <div style={{ textAlign: "center", marginTop: "50px" }}>
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        height: "100vh", // Full screen height
+        flexDirection: "column",
+      }}
+    >
       <h1>Login</h1>
       <button
         onClick={handleGoogleLogin}
@@ -33,6 +41,7 @@ const Login: React.FC = () => {
           color: "#fff",
           border: "none",
           borderRadius: "5px",
+          marginTop: "20px",
         }}
       >
         Sign in with Google

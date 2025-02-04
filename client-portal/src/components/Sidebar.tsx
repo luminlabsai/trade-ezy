@@ -15,16 +15,8 @@ const Sidebar: React.FC = () => {
       <ul style={{ listStyle: "none", padding: 0 }}>
         <li>
           <Link
-            to="/dashboard"
-            style={{ color: "#647a5c", textDecoration: "none" }}
-          >
-            Dashboard
-          </Link>
-        </li>
-        <li>
-          <Link
             to="/services"
-            style={{ color: "#647a5c", textDecoration: "none" }}
+            style={{ color: "#fff", textDecoration: "none", display: "block", padding: "10px 0" }}
           >
             Services
           </Link>
@@ -32,7 +24,7 @@ const Sidebar: React.FC = () => {
         <li>
           <Link
             to="/chat-history"
-            style={{ color: "#647a5c", textDecoration: "none" }}
+            style={{ color: "#fff", textDecoration: "none", display: "block", padding: "10px 0" }}
           >
             Chat History
           </Link>
@@ -40,9 +32,9 @@ const Sidebar: React.FC = () => {
         <li>
           <Link
             to="/users"
-            style={{ color: "#647a5c", textDecoration: "none" }}
+            style={{ color: "#fff", textDecoration: "none", display: "block", padding: "10px 0" }}
           >
-            Users
+            Account
           </Link>
         </li>
       </ul>

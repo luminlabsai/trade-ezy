@@ -1,6 +1,5 @@
-import React from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
-import { AuthProvider } from "./context/AuthContext";
+import { AuthProvider, useAuth } from "./context/AuthContext"; // Import useAuth
 import ProtectedRoute from "./components/ProtectedRoute";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
@@ -10,13 +9,15 @@ import Users from "./pages/Users";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
 
-function App() {
+function AppContent() {
+  const { currentUser } = useAuth(); // ✅ Use correct property name
+
   return (
-    <Router>
-      <AuthProvider>
-        <Navbar />
-        <div style={{ display: "flex" }}>
-          <Sidebar />
+    <>
+      <Navbar />
+      <div style={{ display: "flex" }}>
+        {currentUser && <Sidebar />} {/* ✅ Show Sidebar only if user is logged in */}
+        <div style={{ flex: 1, padding: "20px" }}>
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route
@@ -54,6 +55,16 @@ function App() {
             <Route path="*" element={<Login />} />
           </Routes>
         </div>
+      </div>
+    </>
+  );
+}
+
+function App() {
+  return (
+    <Router>
+      <AuthProvider>
+        <AppContent />
       </AuthProvider>
     </Router>
   );

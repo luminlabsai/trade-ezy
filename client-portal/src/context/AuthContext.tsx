@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { auth } from "../firebase";
+import { User } from "firebase/auth"; // ✅ Correctly import Firebase User type
 
 interface AuthContextType {
-  currentUser: any;
+  currentUser: User | null; // ✅ Ensure correct typing
   businessId: string | null;
   getIdToken: () => Promise<string | null>;
 }
@@ -10,7 +11,7 @@ interface AuthContextType {
 export const AuthContext = createContext<AuthContextType | null>(null);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null); // ✅ Ensure User type is used
   const [businessId, setBusinessId] = useState<string | null>(null);
 
   const getIdToken = async () => {
@@ -65,7 +66,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return unsubscribe;
   }, []);
   
-
   return (
     <AuthContext.Provider value={{ currentUser, businessId, getIdToken }}>
       {children}
