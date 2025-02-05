@@ -6,7 +6,7 @@ export const fetchServices = async (businessId: string) => {
       return [];
     }
   
-    console.log("📡 Fetching services for businessID:", businessId); // ✅ Debugging log
+    console.log("📡 Fetching services for businessID:", businessId);
   
     try {
       const response = await fetch(`${BASE_URL}/api/manageBusinessServices?business_id=${businessId}`, {
@@ -16,15 +16,15 @@ export const fetchServices = async (businessId: string) => {
         },
       });
   
-      console.log("📡 Response status:", response.status); // ✅ Log response status
+      console.log("📡 Response status:", response.status);
   
       if (!response.ok) {
-        const errorText = await response.text(); // Get response error message
+        const errorText = await response.text();
         throw new Error(`Failed to fetch services: ${errorText}`);
       }
   
       const data = await response.json();
-      console.log("✅ Fetched services:", data); // ✅ Debugging log
+      console.log("✅ Fetched services:", data);
   
       return data || [];
     } catch (error) {
@@ -33,33 +33,61 @@ export const fetchServices = async (businessId: string) => {
     }
   };
   
-
-export const deleteSelectedServices = async (serviceIDs: string[]) => {
-  if (!serviceIDs || serviceIDs.length === 0) {
-    console.error("🚨 Error: No service IDs provided for deletion.");
+export const deleteService = async (serviceId: string) => {
+  if (!serviceId) {
+    console.error("🚨 Error: No service ID provided for deletion.");
     return;
   }
 
-  console.log("🗑️ Deleting services with IDs:", serviceIDs); // ✅ Debugging log
+  console.log("🗑️ Deleting service with ID:", serviceId);
 
   try {
-    const response = await fetch(`${BASE_URL}/api/manageBusinessServices`, {
+    const response = await fetch(`${BASE_URL}/api/manageBusinessServices/${serviceId}`, {
       method: "DELETE",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ serviceIDs }),
     });
 
-    console.log("🗑️ Response status:", response.status); // ✅ Log response status
+    console.log("🗑️ Response status:", response.status);
 
     if (!response.ok) {
-      const errorText = await response.text(); // Get response error message
-      throw new Error(`Failed to delete services: ${errorText}`);
+      const errorText = await response.text();
+      throw new Error(`Failed to delete service: ${errorText}`);
     }
 
     return await response.json();
   } catch (error) {
-    console.error("🚨 Error deleting services:", error);
+    console.error("🚨 Error deleting service:", error);
+  }
+};
+
+export const updateService = async (serviceId: string, updatedFields: any) => {
+  if (!serviceId || !updatedFields) {
+    console.error("🚨 Error: serviceId and updatedFields are required for updating.");
+    return;
+  }
+
+  console.log("✏️ Updating service with ID:", serviceId, "Fields:", updatedFields);
+
+  try {
+    const response = await fetch(`${BASE_URL}/api/manageBusinessServices`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ service_id: serviceId, ...updatedFields }),
+    });
+
+    console.log("✏️ Response status:", response.status);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to update service: ${errorText}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error("🚨 Error updating service:", error);
   }
 };
