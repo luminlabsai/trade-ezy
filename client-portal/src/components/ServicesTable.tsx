@@ -1,6 +1,18 @@
 import React, { useEffect, useState } from "react";
 import { fetchServices, deleteSelectedServices } from "../api/services";
 import { useAuth } from "../context/AuthContext";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper,
+  Checkbox,
+  Button,
+  Typography,
+} from "@mui/material";
 
 interface Service {
   service_id: string;
@@ -32,16 +44,14 @@ const ServicesTable: React.FC = () => {
     }
   }, [businessId]);
 
-  // Handle checkbox selection
   const toggleSelection = (serviceId: string) => {
     setSelectedServices((prev) =>
       prev.includes(serviceId)
-        ? prev.filter((id) => id !== serviceId) // Deselect
-        : [...prev, serviceId] // Select
+        ? prev.filter((id) => id !== serviceId)
+        : [...prev, serviceId]
     );
   };
 
-  // Handle delete
   const handleDelete = async () => {
     if (selectedServices.length > 0) {
       const confirmation = window.prompt(
@@ -51,76 +61,73 @@ const ServicesTable: React.FC = () => {
       if (confirmation === "delete") {
         await deleteSelectedServices(selectedServices);
         setServices((prev) => prev.filter((s) => !selectedServices.includes(s.service_id)));
-        setSelectedServices([]); // Clear selection
+        setSelectedServices([]);
       }
     }
   };
 
-  if (loading) return <p>Loading services...</p>;
-  if (error) return <p className="text-red-500">{error}</p>;
+  if (loading) return <Typography>Loading services...</Typography>;
+  if (error) return <Typography color="error">{error}</Typography>;
 
   return (
-    <div className="p-4">
-      <h2 className="text-lg font-semibold mb-4">Services</h2>
-      <table className="min-w-full bg-white border border-gray-200">
-        <thead>
-          <tr className="bg-gray-100">
-            <th className="border px-4 py-2">
-              <input
-                type="checkbox"
-                onChange={(e) => {
-                  if (e.target.checked) {
-                    setSelectedServices(services.map((s) => s.service_id)); // Select all
-                  } else {
-                    setSelectedServices([]); // Deselect all
-                  }
-                }}
-                checked={selectedServices.length === services.length && services.length > 0}
-              />
-            </th>
-            <th className="border px-4 py-2">Service Name</th>
-            <th className="border px-4 py-2">Description</th>
-            <th className="border px-4 py-2">Duration (mins)</th>
-            <th className="border px-4 py-2">Price ($)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {services.length > 0 ? (
-            services.map((service) => (
-              <tr key={service.service_id} className="hover:bg-gray-50">
-                <td className="border px-4 py-2 text-center">
-                  <input
-                    type="checkbox"
-                    checked={selectedServices.includes(service.service_id)}
-                    onChange={() => toggleSelection(service.service_id)}
-                  />
-                </td>
-                <td className="border px-4 py-2">{service.service_name}</td>
-                <td className="border px-4 py-2">{service.description}</td>
-                <td className="border px-4 py-2 text-center">{service.duration_minutes}</td>
-                <td className="border px-4 py-2 text-center">${service.price.toFixed(2)}</td>
-              </tr>
-            ))
-          ) : (
-            <tr>
-              <td colSpan={5} className="border px-4 py-2 text-center">
-                No services found.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+    <div style={{ padding: "20px" }}>
+      <Typography variant="h5" gutterBottom>
+        Services
+      </Typography>
+      <TableContainer component={Paper} sx={{ borderRadius: 2, overflow: "hidden", boxShadow: 3 }}>
+        <Table>
+          <TableHead>
+            <TableRow sx={{ backgroundColor: "#f4f4f4" }}>
+              <TableCell padding="checkbox">
+                <Checkbox
+                  onChange={(e) => {
+                    setSelectedServices(e.target.checked ? services.map((s) => s.service_id) : []);
+                  }}
+                  checked={selectedServices.length === services.length && services.length > 0}
+                />
+              </TableCell>
+              <TableCell>Service Name</TableCell>
+              <TableCell>Description</TableCell>
+              <TableCell align="center">Duration (mins)</TableCell>
+              <TableCell align="center">Price ($)</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {services.length > 0 ? (
+              services.map((service) => (
+                <TableRow key={service.service_id} hover>
+                  <TableCell padding="checkbox">
+                    <Checkbox
+                      checked={selectedServices.includes(service.service_id)}
+                      onChange={() => toggleSelection(service.service_id)}
+                    />
+                  </TableCell>
+                  <TableCell>{service.service_name}</TableCell>
+                  <TableCell>{service.description}</TableCell>
+                  <TableCell align="center">{service.duration_minutes}</TableCell>
+                  <TableCell align="center">${service.price.toFixed(2)}</TableCell>
+                </TableRow>
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={5} align="center">
+                  No services found.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
 
-      {/* Delete Button */}
-      <button
+      <Button
         onClick={handleDelete}
         disabled={selectedServices.length === 0}
-        className={`mt-4 px-4 py-2 rounded text-white ${
-          selectedServices.length > 0 ? "bg-red-600 hover:bg-red-700" : "bg-gray-400 cursor-not-allowed"
-        }`}
+        variant="contained"
+        color="error"
+        sx={{ mt: 2 }}
       >
         Delete Selected Services
-      </button>
+      </Button>
     </div>
   );
 };

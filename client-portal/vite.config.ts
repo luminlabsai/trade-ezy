@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig({
-  plugins: [react(), tsconfigPaths()], // ✅ Adds TypeScript path alias support
+  plugins: [react(), tsconfigPaths()], // ✅ No TailwindCSS
   server: {
     proxy: {
       "/api": {
@@ -14,8 +14,8 @@ export default defineConfig({
       },
     },
     headers: {
-      "Cross-Origin-Opener-Policy": "unsafe-none",  // ✅ Keeps popups working
-      "Cross-Origin-Embedder-Policy": "unsafe-none" // ✅ Allows external popups
+      "Cross-Origin-Opener-Policy": "unsafe-none",  
+      "Cross-Origin-Embedder-Policy": "unsafe-none"
     }
   }
 });
