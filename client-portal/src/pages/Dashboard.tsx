@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { getServices } from "../api";
+import ServicesTable from "./components/ServicesTable";
+
 
 interface Service {
   service_id: string;

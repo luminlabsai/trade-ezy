@@ -1,6 +1,9 @@
 import React from "react";
 import { Link } from "react-router-dom";
 
+
+console.log("✅ pages/Services.tsx is rendering");
+
 const Sidebar: React.FC = () => {
   return (
     <div
