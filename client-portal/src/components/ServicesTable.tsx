@@ -62,6 +62,13 @@ const ServicesTable: React.FC = () => {
     setOpenConfirmDialog(true);
   };
 
+  const handleCloseDialog = () => {
+    setOpenConfirmDialog(false);
+    setTimeout(() => {
+      document.activeElement instanceof HTMLElement && document.activeElement.blur();
+    }, 0);
+  };
+
   const handleSave = () => {
     confirmActionHandler(async () => {
       if (editingServiceId) {
@@ -178,24 +185,32 @@ const ServicesTable: React.FC = () => {
           </TableBody>
         </Table>
       </TableContainer>
-      <Dialog open={openConfirmDialog} onClose={() => setOpenConfirmDialog(false)}>
-        <DialogTitle>Confirm Action</DialogTitle>
+      <Dialog
+        open={openConfirmDialog}
+        onClose={handleCloseDialog}
+        disableEnforceFocus
+        disablePortal // ✅ Ensures dialog stays within the DOM tree of the parent
+        keepMounted   // ✅ Prevents unmounting to avoid reattaching focus incorrectly
+        aria-labelledby="confirmation-dialog-title"
+        >
+        <DialogTitle id="confirmation-dialog-title">Confirm Action</DialogTitle>
         <DialogContent>
-          <DialogContentText>Are you sure you want to proceed?</DialogContentText>
+            <DialogContentText>Are you sure you want to proceed?</DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpenConfirmDialog(false)}>Cancel</Button>
-          <Button
+            <Button onClick={handleCloseDialog}>Cancel</Button>
+            <Button
             onClick={() => {
-              if (confirmAction) confirmAction();
-              setOpenConfirmDialog(false);
+                if (confirmAction) confirmAction();
+                handleCloseDialog();
             }}
             color="primary"
-          >
+            autoFocus
+            >
             Confirm
-          </Button>
+            </Button>
         </DialogActions>
-      </Dialog>
+        </Dialog>
     </div>
   );
 };
