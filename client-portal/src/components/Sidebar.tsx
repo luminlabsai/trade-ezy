@@ -1,7 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
 
-console.log("✅ Sidebar.tsx is rendering");
 
 const Sidebar: React.FC = () => {
   return (
@@ -13,16 +12,21 @@ const Sidebar: React.FC = () => {
         padding: "20px",
       }}
     >
-      <h2 style={{ color: "#fff" }}>Trade-Ezy</h2>
+
       <ul style={{ listStyle: "none", padding: 0 }}>
-        <li>
+
+      <li>
           <Link
-            to="/services"
+            to="/users"
             style={{ color: "#fff", textDecoration: "none", display: "block", padding: "10px 0" }}
           >
-            Services
+            Account
           </Link>
         </li>
+
+
+
+
         <li>
           <Link
             to="/chathistory"
@@ -31,14 +35,18 @@ const Sidebar: React.FC = () => {
             Chat History
           </Link>
         </li>
+
+
+
         <li>
           <Link
-            to="/users"
+            to="/services"
             style={{ color: "#fff", textDecoration: "none", display: "block", padding: "10px 0" }}
           >
-            Account
+            Services
           </Link>
         </li>
+
       </ul>
     </div>
   );

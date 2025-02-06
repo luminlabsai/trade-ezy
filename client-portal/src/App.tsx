@@ -6,9 +6,10 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Services from "./pages/Services";
 import ChatHistory from "./pages/ChatHistory";
-import Users from "./pages/Users";
+import Account from "./pages/Account";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
+import { Navigate } from "react-router-dom";
 
 const theme = createTheme(); // MUI theme
 
@@ -22,39 +23,11 @@ function AppContent() {
         <div style={{ flex: 1, padding: "20px" }}>
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route
-              path="/dashboard"
-              element={
-                <ProtectedRoute>
-                  <Dashboard />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/services"
-              element={
-                <ProtectedRoute>
-                  <Services />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/chathistory"
-              element={
-                <ProtectedRoute>
-                  <ChatHistory />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/users"
-              element={
-                <ProtectedRoute>
-                  <Users />
-                </ProtectedRoute>
-              }
-            />
-            <Route path="*" element={<Login />} />
+            <Route path="/dashboard" element={<Navigate to="/account" replace />} /> {/* ✅ Redirects to Account */}
+            <Route path="/services" element={<ProtectedRoute><Services /></ProtectedRoute>} />
+            <Route path="/chathistory" element={<ProtectedRoute><ChatHistory /></ProtectedRoute>} />
+            <Route path="/account" element={<ProtectedRoute><Account /></ProtectedRoute>} /> {/* ✅ Correct Account route */}
+            <Route path="*" element={<Navigate to="/account" replace />} /> {/* ✅ Redirects all unknown paths to Account */}
           </Routes>
         </div>
       </div>

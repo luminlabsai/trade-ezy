@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { fetchChatHistory } from "../api/chathistory";
 import { format } from "date-fns";
-import { Dialog } from "@radix-ui/react-dialog";
+import { Table, TableHead, TableBody, TableRow, TableCell } from "@mui/material";
+import Pagination from "@mui/material/Pagination";
 
 interface ChatMessage {
     message_id: number;
@@ -16,19 +17,20 @@ interface ChatMessage {
 
 const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
     const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
-    const [selectedMessage, setSelectedMessage] = useState<ChatMessage | null>(null);
     const [fromDate, setFromDate] = useState<string>("");
     const [toDate, setToDate] = useState<string>("");
     const [loading, setLoading] = useState<boolean>(false);
+    const [page, setPage] = useState<number>(1);
+    const rowsPerPage = 10;
 
     useEffect(() => {
         loadChatHistory();
-    }, [businessId, fromDate, toDate]);
+    }, [businessId, fromDate, toDate, page]);
 
     const loadChatHistory = async () => {
         setLoading(true);
         try {
-            const data = await fetchChatHistory(businessId, fromDate, toDate);
+            const data = await fetchChatHistory(businessId, fromDate, toDate, rowsPerPage, (page - 1) * rowsPerPage);
             setChatHistory(data as ChatMessage[]);
         } catch (error) {
             console.error("Failed to fetch chat history", error);
@@ -37,49 +39,36 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
     };
 
     return (
-        <div className="p-4">
+        <div className="p-4 h-screen flex flex-col">
             <h2 className="text-xl font-semibold mb-4">Chat History</h2>
             <div className="flex gap-4 mb-4">
                 <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="border p-2" />
                 <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="border p-2" />
                 <button className="px-4 py-2 bg-blue-500 text-white rounded" onClick={loadChatHistory}>Filter</button>
             </div>
-            <table className="w-full border-collapse border border-gray-200">
-                <thead>
-                    <tr>
-                        <th>Timestamp</th>
-                        <th>Role</th>
-                        <th>Message</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {chatHistory.map((message) => (
-                        <tr key={message.message_id}>
-                            <td>{format(new Date(message.timestamp), "yyyy-MM-dd HH:mm")}</td>
-                            <td>{message.role}</td>
-                            <td className="truncate max-w-sm">{message.content}</td>
-                            <td>
-                                <button className="px-3 py-1 bg-gray-500 text-white rounded" onClick={() => setSelectedMessage(message)}>View</button>
-                            </td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
-
-            {selectedMessage && (
-                <Dialog open={true} onOpenChange={() => setSelectedMessage(null)}>
-                    <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50">
-                        <div className="bg-white p-6 rounded-lg shadow-lg">
-                            <h3 className="text-lg font-bold">Message Details</h3>
-                            <p><strong>Timestamp:</strong> {selectedMessage.timestamp}</p>
-                            <p><strong>Role:</strong> {selectedMessage.role}</p>
-                            <p><strong>Content:</strong> {selectedMessage.content}</p>
-                            <button className="mt-4 px-4 py-2 bg-red-500 text-white rounded" onClick={() => setSelectedMessage(null)}>Close</button>
-                        </div>
-                    </div>
-                </Dialog>
-            )}
+            <div className="flex-grow overflow-auto">
+                <Table className="w-full border border-gray-300">
+                    <TableHead>
+                        <TableRow className="border-b border-gray-300">
+                            <TableCell>Timestamp</TableCell>
+                            <TableCell>Role</TableCell>
+                            <TableCell>Message</TableCell>
+                        </TableRow>
+                    </TableHead>
+                    <TableBody>
+                        {chatHistory.map((message) => (
+                            <TableRow key={message.message_id} className="border-b border-gray-300">
+                                <TableCell>{format(new Date(message.timestamp), "yyyy-MM-dd HH:mm")}</TableCell>
+                                <TableCell>{message.role}</TableCell>
+                                <TableCell className="truncate max-w-sm">{message.content}</TableCell>
+                            </TableRow>
+                        ))}
+                    </TableBody>
+                </Table>
+            </div>
+            <div className="flex justify-center mt-4">
+                <Pagination count={Math.ceil(chatHistory.length / rowsPerPage)} page={page} onChange={(_, value) => setPage(value)} color="primary" />
+            </div>
         </div>
     );
 };
