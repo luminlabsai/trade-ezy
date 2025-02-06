@@ -40,6 +40,8 @@ const ServicesTable: React.FC = () => {
     duration_minutes: 0,
     price: 0,
   });
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+  const [serviceToDelete, setServiceToDelete] = useState<string | null>(null);
 
   useEffect(() => {
     if (businessId) {
@@ -74,8 +76,22 @@ const ServicesTable: React.FC = () => {
   };
 
   const handleDelete = async (serviceId: string) => {
-    await deleteService(serviceId);
-    setServices((prev) => prev.filter((s) => s.service_id !== serviceId));
+    setServiceToDelete(serviceId);
+    setDeleteConfirmationOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (serviceToDelete) {
+      await deleteService(serviceToDelete);
+      setServices((prev) => prev.filter((s) => s.service_id !== serviceToDelete));
+      setDeleteConfirmationOpen(false);
+      setServiceToDelete(null);
+    }
+  };
+
+  const cancelDelete = () => {
+    setDeleteConfirmationOpen(false);
+    setServiceToDelete(null);
   };
 
   const handleAddService = async () => {
@@ -97,11 +113,9 @@ const ServicesTable: React.FC = () => {
         return;
       }
 
-      // Refetch services from the DB to ensure UI is up to date
       const updatedServices = await fetchServices(businessId);
       setServices(updatedServices);
 
-      // Reset form and close the dialog
       setNewService({
         service_name: "",
         description: "",
@@ -117,8 +131,6 @@ const ServicesTable: React.FC = () => {
 
   const handleCloseDialog = () => {
     setOpenAddDialog(false);
-
-    // Ensure focus is removed from any element inside the dialog before closing
     setTimeout(() => {
       if (document.activeElement instanceof HTMLElement) {
         document.activeElement.blur();
@@ -241,6 +253,24 @@ const ServicesTable: React.FC = () => {
         <DialogActions>
           <Button onClick={handleCloseDialog}>Cancel</Button>
           <Button onClick={handleAddService} color="primary">Add</Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={deleteConfirmationOpen}
+        onClose={cancelDelete}
+        aria-labelledby="delete-confirmation-dialog-title"
+      >
+        <DialogTitle id="delete-confirmation-dialog-title">Confirm Delete</DialogTitle>
+        <DialogContent>
+          <Typography>Are you sure you want to delete this service?</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={cancelDelete} color="primary">
+            Cancel
+          </Button>
+          <Button onClick={confirmDelete} color="error">
+            Delete
+          </Button>
         </DialogActions>
       </Dialog>
     </div>
