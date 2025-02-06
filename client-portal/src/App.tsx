@@ -39,7 +39,7 @@ function AppContent() {
               }
             />
             <Route
-              path="/chat-history"
+              path="/chathistory"
               element={
                 <ProtectedRoute>
                   <ChatHistory />

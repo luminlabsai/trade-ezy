@@ -1,8 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
 
-
-console.log("✅ pages/Services.tsx is rendering");
+console.log("✅ Sidebar.tsx is rendering");
 
 const Sidebar: React.FC = () => {
   return (
@@ -26,7 +25,7 @@ const Sidebar: React.FC = () => {
         </li>
         <li>
           <Link
-            to="/chat-history"
+            to="/chathistory"
             style={{ color: "#fff", textDecoration: "none", display: "block", padding: "10px 0" }}
           >
             Chat History
