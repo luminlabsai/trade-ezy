@@ -20,19 +20,24 @@ def get_db_connection():
         raise
 
 CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": "*",  # ✅ Allow all origins
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
 }
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
+    """Azure function to manage business accounts."""
+    # ✅ Handle CORS preflight request correctly
+    if req.method == "OPTIONS":
+        logging.info("Received OPTIONS request. Sending CORS headers.")
+        return func.HttpResponse(
+            "", status_code=204, headers=CORS_HEADERS  # ✅ Use 204 No Content for preflight
+        )
+
     try:
-        if req.method == "OPTIONS":
-            return func.HttpResponse("", status_code=200, headers=CORS_HEADERS)
-        
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         business_id = req.params.get("business_id")
         if not business_id:
             return func.HttpResponse(
@@ -48,7 +53,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 FROM businesses WHERE business_id = %s
             """, (business_id,))
             business = cursor.fetchone()
-            
+
             if not business:
                 return func.HttpResponse(
                     json.dumps({"error": "Business not found"}),
@@ -56,7 +61,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     mimetype="application/json",
                     headers=CORS_HEADERS,
                 )
-            
+
             business_data = {
                 "name": business[0],
                 "address": business[1],
@@ -66,29 +71,78 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 "description": business[5],
                 "instagram_business_id": business[6]
             }
-            return func.HttpResponse(json.dumps(business_data), mimetype="application/json", status_code=200, headers=CORS_HEADERS)
-        
+            return func.HttpResponse(
+                json.dumps(business_data),
+                mimetype="application/json",
+                status_code=200,
+                headers=CORS_HEADERS,
+            )
+
         elif req.method == "POST":
             data = req.get_json()
-            cursor.execute("""
-                UPDATE businesses SET name=%s, address=%s, phone=%s, email=%s, operating_hours=%s, description=%s, instagram_business_id=%s
-                WHERE business_id = %s
-            """, (data.get("name"), data.get("address"), data.get("phone"), data.get("email"),
-                   json.dumps(data.get("operating_hours")), data.get("description"), data.get("instagram_business_id"), business_id))
+
+            if not data:
+                return func.HttpResponse(
+                    json.dumps({"error": "No update fields provided"}),
+                    status_code=400,
+                    mimetype="application/json",
+                    headers=CORS_HEADERS,
+                )
+
+            update_fields = []
+            values = []
+            for key, value in data.items():
+                if key != "business_id":
+                    update_fields.append(f"{key} = %s")
+                    values.append(json.dumps(value) if key == "operating_hours" else value)
+
+            if not update_fields:
+                return func.HttpResponse(
+                    json.dumps({"error": "No valid fields to update"}),
+                    status_code=400,
+                    mimetype="application/json",
+                    headers=CORS_HEADERS,
+                )
+
+            values.append(business_id)
+            update_query = f"UPDATE businesses SET {', '.join(update_fields)} WHERE business_id = %s"
+
+            cursor.execute(update_query, values)
             conn.commit()
-            return func.HttpResponse(json.dumps({"message": "Business updated successfully"}), status_code=200, mimetype="application/json", headers=CORS_HEADERS)
-        
+
+            return func.HttpResponse(
+                json.dumps({"message": "Business updated successfully"}),
+                status_code=200,
+                mimetype="application/json",
+                headers=CORS_HEADERS,
+            )
+
         elif req.method == "DELETE":
             cursor.execute("DELETE FROM businesses WHERE business_id = %s", (business_id,))
             conn.commit()
-            return func.HttpResponse(json.dumps({"message": "Business deleted successfully"}), status_code=200, mimetype="application/json", headers=CORS_HEADERS)
-        
-        return func.HttpResponse(json.dumps({"error": "Method not allowed"}), status_code=405, mimetype="application/json", headers=CORS_HEADERS)
-    
+            return func.HttpResponse(
+                json.dumps({"message": "Business deleted successfully"}),
+                status_code=200,
+                mimetype="application/json",
+                headers=CORS_HEADERS,
+            )
+
+        return func.HttpResponse(
+            json.dumps({"error": "Method not allowed"}),
+            status_code=405,
+            mimetype="application/json",
+            headers=CORS_HEADERS,
+        )
+
     except Exception as e:
         logging.error(f"Error in manageAccounts: {e}")
-        return func.HttpResponse(json.dumps({"error": str(e)}), status_code=500, mimetype="application/json", headers=CORS_HEADERS)
-    
+        return func.HttpResponse(
+            json.dumps({"error": str(e)}),
+            status_code=500,
+            mimetype="application/json",
+            headers=CORS_HEADERS,
+        )
+
     finally:
         cursor.close()
         conn.close()
