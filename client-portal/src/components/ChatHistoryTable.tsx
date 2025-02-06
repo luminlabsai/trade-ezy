@@ -1,76 +1,143 @@
 import React, { useState, useEffect } from "react";
 import { fetchChatHistory } from "../api/chathistory";
 import { format } from "date-fns";
-import { Table, TableHead, TableBody, TableRow, TableCell } from "@mui/material";
-import Pagination from "@mui/material/Pagination";
+import {
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
+  TableContainer,
+  Paper,
+  Button,
+  Typography,
+  TextField,
+  Pagination,
+  Tooltip,
+  Grid,
+} from "@mui/material";
 
 interface ChatMessage {
-    message_id: number;
-    business_id: string;
-    sender_id: string;
-    role: string;
-    content: string;
-    timestamp: string;
-    message_type: string;
-    name: string | null;
+  message_id: number;
+  business_id: string;
+  sender_id: string;
+  role: string;
+  content: string;
+  timestamp: string;
+  message_type: string;
+  name: string | null;
 }
 
 const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
-    const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
-    const [fromDate, setFromDate] = useState<string>("");
-    const [toDate, setToDate] = useState<string>("");
-    const [loading, setLoading] = useState<boolean>(false);
-    const [page, setPage] = useState<number>(1);
-    const rowsPerPage = 10;
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [totalCount, setTotalCount] = useState<number>(0); // ✅ Track total messages
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
+  const [page, setPage] = useState<number>(1);
+  const rowsPerPage = 10;
 
-    useEffect(() => {
-        loadChatHistory();
-    }, [businessId, fromDate, toDate, page]);
+  useEffect(() => {
+    loadChatHistory();
+  }, [businessId, fromDate, toDate, page]);
 
-    const loadChatHistory = async () => {
-        setLoading(true);
-        try {
-            const data = await fetchChatHistory(businessId, fromDate, toDate, rowsPerPage, (page - 1) * rowsPerPage);
-            setChatHistory(data as ChatMessage[]);
-        } catch (error) {
-            console.error("Failed to fetch chat history", error);
-        }
-        setLoading(false);
-    };
+  const loadChatHistory = async () => {
+    setLoading(true);
+    try {
+      const response = await fetchChatHistory(businessId, fromDate, toDate, rowsPerPage, (page - 1) * rowsPerPage);
+      setChatHistory(response.messages); // ✅ Ensure `messages` array is used
+      setTotalCount(response.totalCount); // ✅ Store total count for pagination
+    } catch (error) {
+      console.error("❌ Failed to fetch chat history", error);
+    }
+    setLoading(false);
+  };
 
-    return (
-        <div className="p-4 h-screen flex flex-col">
-            <h2 className="text-xl font-semibold mb-4">Chat History</h2>
-            <div className="flex gap-4 mb-4">
-                <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="border p-2" />
-                <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="border p-2" />
-                <button className="px-4 py-2 bg-blue-500 text-white rounded" onClick={loadChatHistory}>Filter</button>
-            </div>
-            <div className="flex-grow overflow-auto">
-                <Table className="w-full border border-gray-300">
-                    <TableHead>
-                        <TableRow className="border-b border-gray-300">
-                            <TableCell>Timestamp</TableCell>
-                            <TableCell>Role</TableCell>
-                            <TableCell>Message</TableCell>
-                        </TableRow>
-                    </TableHead>
-                    <TableBody>
-                        {chatHistory.map((message) => (
-                            <TableRow key={message.message_id} className="border-b border-gray-300">
-                                <TableCell>{format(new Date(message.timestamp), "yyyy-MM-dd HH:mm")}</TableCell>
-                                <TableCell>{message.role}</TableCell>
-                                <TableCell className="truncate max-w-sm">{message.content}</TableCell>
-                            </TableRow>
-                        ))}
-                    </TableBody>
-                </Table>
-            </div>
-            <div className="flex justify-center mt-4">
-                <Pagination count={Math.ceil(chatHistory.length / rowsPerPage)} page={page} onChange={(_, value) => setPage(value)} color="primary" />
-            </div>
-        </div>
-    );
+  return (
+    <Paper sx={{ padding: 3, marginTop: 2, borderRadius: 2, boxShadow: 3 }}>
+      <Typography variant="h5" sx={{ mb: 2 }}>
+        Chat History
+      </Typography>
+
+      {/* ✅ Date Filters */}
+      <Grid container spacing={2} alignItems="center" sx={{ mb: 2 }}>
+        <Grid item xs={12} sm={5}>
+          <TextField
+            label="From Date"
+            type="date"
+            fullWidth
+            size="small"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            InputLabelProps={{ shrink: true }}
+          />
+        </Grid>
+        <Grid item xs={12} sm={5}>
+          <TextField
+            label="To Date"
+            type="date"
+            fullWidth
+            size="small"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            InputLabelProps={{ shrink: true }}
+          />
+        </Grid>
+        <Grid item xs={12} sm={2}>
+          <Button variant="contained" fullWidth size="large" onClick={loadChatHistory}>
+            Filter
+          </Button>
+        </Grid>
+      </Grid>
+
+      {/* ✅ Chat Table */}
+      <TableContainer component={Paper} sx={{ borderRadius: 2, boxShadow: 2, overflow: "hidden" }}>
+        <Table size="small">
+          <TableHead>
+            <TableRow sx={{ backgroundColor: "#f4f4f4" }}>
+              <TableCell sx={{ fontWeight: "bold" }}>Timestamp</TableCell>
+              <TableCell sx={{ fontWeight: "bold" }}>Role</TableCell>
+              <TableCell sx={{ fontWeight: "bold" }}>Message</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {chatHistory.length > 0 ? (
+              chatHistory.map((message) => (
+                <TableRow key={message.message_id} hover>
+                  <TableCell>{format(new Date(message.timestamp), "yyyy-MM-dd HH:mm")}</TableCell>
+                  <TableCell>{message.role}</TableCell>
+                  <TableCell>
+                    {/* ✅ Truncate long messages & show tooltip on hover */}
+                    <Tooltip title={message.content} arrow>
+                      <Typography noWrap sx={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {message.content}
+                      </Typography>
+                    </Tooltip>
+                  </TableCell>
+                </TableRow>
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={3} align="center">
+                  No chat history found.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+
+      {/* ✅ Pagination */}
+      <Grid container justifyContent="center" sx={{ mt: 2 }}>
+        <Pagination
+          count={Math.ceil(totalCount / rowsPerPage)} // ✅ Use `totalCount` for pagination
+          page={page}
+          onChange={(_, value) => setPage(value)}
+          color="primary"
+        />
+      </Grid>
+    </Paper>
+  );
 };
 
 export default ChatHistoryTable;

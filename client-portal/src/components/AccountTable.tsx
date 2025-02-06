@@ -14,6 +14,8 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Snackbar,
+  Alert,
 } from "@mui/material";
 
 interface AccountProps {
@@ -39,6 +41,7 @@ const AccountTable: React.FC<AccountProps> = ({
 }) => {
   const [formData, setFormData] = useState({ address, phone, email, description, operating_hours });
   const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -68,17 +71,13 @@ const AccountTable: React.FC<AccountProps> = ({
     try {
       console.log("📡 Saving account changes:", formData);
       await onSave(formData);
-  
-      alert("✅ Account updated successfully!");
-  
-      // ✅ Ensure dialog only closes after successful save
+      
+      setSnackbarOpen(true);  // ✅ Show success notification
       setEditDialogOpen(false);
     } catch (error) {
-      alert("❌ Error updating account. See console for details.");
       console.error("❌ Failed to update account data:", error);
     }
   };
-  
 
   return (
     <div style={{ padding: "16px" }}>
@@ -220,10 +219,17 @@ const AccountTable: React.FC<AccountProps> = ({
           ))}
         </DialogContent>
         <DialogActions sx={{ padding: "8px 16px" }}>
-          <Button onClick={() => setEditDialogOpen(false)} sx={{ fontSize: "0.85rem", padding: "4px 8px" }}>Cancel</Button>
-          <Button onClick={handleSave} color="primary" sx={{ fontSize: "0.85rem", padding: "4px 8px" }}>Save Changes</Button>
+          <Button onClick={() => setEditDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleSave} color="primary">Save Changes</Button>
         </DialogActions>
       </Dialog>
+
+      {/* ✅ Snackbar Notification */}
+      <Snackbar open={snackbarOpen} autoHideDuration={3000} onClose={() => setSnackbarOpen(false)}>
+        <Alert onClose={() => setSnackbarOpen(false)} severity="success">
+          ✅ Account details updated successfully!
+        </Alert>
+      </Snackbar>
     </div>
   );
 };

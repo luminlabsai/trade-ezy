@@ -21,7 +21,7 @@ def get_db_connection():
 
 # ✅ Set CORS Headers
 CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",  # Can be more restrictive if needed
+    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
 }
@@ -46,37 +46,52 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 mimetype="application/json",
                 headers=CORS_HEADERS
             )
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # ✅ Query to count total messages (for pagination)
+        count_query = """
+            SELECT COUNT(*) FROM chathistory WHERE business_id = %s
+        """
+        count_params = [business_id]
+
+        if from_date:
+            count_query += " AND timestamp >= %s"
+            count_params.append(from_date)
         
-        query = """
+        if to_date:
+            count_query += " AND timestamp <= %s"
+            count_params.append(to_date)
+        
+        cursor.execute(count_query, count_params)
+        total_count = cursor.fetchone()[0]  # ✅ Fetch total count
+
+        # ✅ Query to fetch paginated messages
+        data_query = """
             SELECT message_id, business_id, sender_id, role, content, timestamp, message_type, name
             FROM chathistory
             WHERE business_id = %s
         """
-        params = [business_id]
-        
+        data_params = [business_id]
+
         if from_date:
-            query += " AND timestamp >= %s"
-            params.append(from_date)
-        
+            data_query += " AND timestamp >= %s"
+            data_params.append(from_date)
+
         if to_date:
-            query += " AND timestamp <= %s"
-            params.append(to_date)
-        
-        query += " ORDER BY timestamp DESC LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
-        
-        # Connect to DB and execute query
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(query, params)
+            data_query += " AND timestamp <= %s"
+            data_params.append(to_date)
+
+        data_query += " ORDER BY timestamp DESC LIMIT %s OFFSET %s"
+        data_params.extend([limit, offset])
+
+        cursor.execute(data_query, data_params)
         rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        # Format response
-        messages = []
-        for row in rows:
-            messages.append({
+
+        # ✅ Format response
+        messages = [
+            {
                 "message_id": row[0],
                 "business_id": row[1],
                 "sender_id": row[2],
@@ -85,20 +100,25 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 "timestamp": row[5].isoformat(),
                 "message_type": row[6],
                 "name": row[7]
-            })
-        
+            }
+            for row in rows
+        ]
+
+        cursor.close()
+        conn.close()
+
         return func.HttpResponse(
-            json.dumps(messages),
+            json.dumps({"messages": messages, "totalCount": total_count}),  # ✅ Return both messages & total count
             mimetype="application/json",
             status_code=200,
-            headers=CORS_HEADERS  # ✅ Ensure headers are included
+            headers=CORS_HEADERS
         )
-    
+
     except Exception as e:
         logging.error(f"Error in getChatHistory: {e}")
         return func.HttpResponse(
             json.dumps({"error": str(e)}),
             status_code=500,
             mimetype="application/json",
-            headers=CORS_HEADERS  # ✅ Ensure error responses also have headers
+            headers=CORS_HEADERS
         )
