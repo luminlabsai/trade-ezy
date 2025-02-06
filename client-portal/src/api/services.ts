@@ -41,34 +41,33 @@ export const fetchServices = async (businessId: string) => {
     }
   };
   
-export const deleteService = async (serviceId: string) => {
-  if (!serviceId) {
-    console.error("🚨 Error: No service ID provided for deletion.");
-    return;
-  }
-
-  console.log("🗑️ Deleting service with ID:", serviceId);
-
-  try {
-    const response = await fetch(`${BASE_URL}/api/manageBusinessServices/${serviceId}`, {
-      method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-
-    console.log("🗑️ Response status:", response.status);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Failed to delete service: ${errorText}`);
+  export const deleteService = async (serviceId: string) => {
+    if (!serviceId) {
+      console.error("🚨 Error: No service ID provided for deletion.");
+      return;
     }
-
-    return await response.json();
-  } catch (error) {
-    console.error("🚨 Error deleting service:", error);
-  }
-};
+  
+    try {
+      const response = await fetch(`${BASE_URL}/api/manageBusinessServices`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ service_id: serviceId }), // ✅ Send service_id in the body
+      });
+  
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to delete service: ${errorText}`);
+      }
+  
+      console.log("✅ Service deleted successfully:", serviceId);
+      return await response.json();
+    } catch (error) {
+      console.error("🚨 Error deleting service:", error);
+    }
+  };
+  
 
 export const updateService = async (serviceId: string, updatedFields: any) => {
   if (!serviceId || !updatedFields) {

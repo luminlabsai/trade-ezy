@@ -145,7 +145,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 status_code=200,
                 headers=get_cors_headers(req)
             )
-
+        #DELETE
         elif method == "DELETE":
             data = req.get_json()
             service_id = data.get("service_id")
@@ -154,22 +154,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 return func.HttpResponse(
                     json.dumps({"error": "service_id is required for deletion."}),
                     status_code=400,
-                    headers=get_cors_headers(req)
+                    headers=get_cors_headers(req)  # ✅ Ensure CORS headers are applied
                 )
 
             cursor.execute("DELETE FROM Services WHERE service_id = %s", (service_id,))
             conn.commit()
 
-            response = func.HttpResponse(
+            return func.HttpResponse(  # ✅ Always return CORS headers on DELETE
                 json.dumps({"message": "Service deleted"}),
                 status_code=200,
-                headers=get_cors_headers(req)
-            )
-
-        else:
-            response = func.HttpResponse(
-                json.dumps({"error": "Method not allowed."}),
-                status_code=405,
                 headers=get_cors_headers(req)
             )
 
