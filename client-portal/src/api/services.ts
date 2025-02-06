@@ -1,3 +1,11 @@
+interface Service {
+    service_id: string;
+    service_name: string;
+    description: string;
+    duration_minutes: number;
+    price: number;
+  }
+  
 const BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 export const fetchServices = async (businessId: string) => {
@@ -91,3 +99,31 @@ export const updateService = async (serviceId: string, updatedFields: any) => {
     console.error("🚨 Error updating service:", error);
   }
 };
+
+export const addService = async (businessId: string, service: Omit<Service, "service_id">) => {
+    const BASE_URL = import.meta.env.VITE_API_BASE_URL;
+  
+    try {
+      const response = await fetch(`${BASE_URL}/api/manageBusinessServices`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          business_id: businessId,
+          ...service,
+        }),
+      });
+  
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to add service: ${errorText}`);
+      }
+  
+      return await response.json(); // Return the new service from backend
+    } catch (error) {
+      console.error("🚨 Error adding service:", error);
+      throw error;
+    }
+  };
+  

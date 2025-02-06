@@ -15,5 +15,8 @@
 		{
 			"path": "clientPortalFunctions"
 		}
-	]
+	],
+	"settings": {
+		"debug.internalConsoleOptions": "neverOpen"
+	}
 }

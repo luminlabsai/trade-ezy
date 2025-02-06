@@ -1,8 +1,7 @@
 {
-    "python.defaultInterpreterPath": "/Users/kit/Library/CloudStorage/OneDrive-DigitideLtd/Lumin Labs/Dev/trade-ezy/metaFunctions/.venv-meta/bin/python",
     "azureFunctions.deploySubpath": ".",
     "azureFunctions.scmDoBuildDuringDeployment": true,
-    "azureFunctions.pythonVenv": ".venv-meta",
+    "azureFunctions.pythonVenv": ".venv-portal-functions",
     "azureFunctions.projectLanguage": "Python",
     "azureFunctions.projectRuntime": "~4",
     "azureFunctions.projectLanguageModel": 2

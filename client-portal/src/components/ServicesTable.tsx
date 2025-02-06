@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { fetchServices, deleteService, updateService } from "../api/services";
+import { fetchServices, deleteService, updateService, addService } from "../api/services";
 import { useAuth } from "../context/AuthContext";
 import {
   Table,
@@ -15,7 +15,6 @@ import {
   Dialog,
   DialogActions,
   DialogContent,
-  DialogContentText,
   DialogTitle,
 } from "@mui/material";
 
@@ -34,8 +33,13 @@ const ServicesTable: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [editingServiceId, setEditingServiceId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Partial<Service>>({});
-  const [confirmAction, setConfirmAction] = useState<null | (() => void)>(null);
-  const [openConfirmDialog, setOpenConfirmDialog] = useState(false);
+  const [openAddDialog, setOpenAddDialog] = useState(false);
+  const [newService, setNewService] = useState<Omit<Service, "service_id">>({
+    service_name: "",
+    description: "",
+    duration_minutes: 0,
+    price: 0,
+  });
 
   useEffect(() => {
     if (businessId) {
@@ -57,37 +61,69 @@ const ServicesTable: React.FC = () => {
     setEditValues({ ...service });
   };
 
-  const confirmActionHandler = (action: () => void) => {
-    setConfirmAction(() => action);
-    setOpenConfirmDialog(true);
+  const handleSave = async () => {
+    if (editingServiceId) {
+      await updateService(editingServiceId, editValues);
+      setServices((prev) =>
+        prev.map((service) =>
+          service.service_id === editingServiceId ? { ...service, ...editValues } : service
+        )
+      );
+      setEditingServiceId(null);
+    }
+  };
+
+  const handleDelete = async (serviceId: string) => {
+    await deleteService(serviceId);
+    setServices((prev) => prev.filter((s) => s.service_id !== serviceId));
+  };
+
+  const handleAddService = async () => {
+    if (!newService.service_name || !newService.duration_minutes || !newService.price) {
+      alert("Please fill in all required fields.");
+      return;
+    }
+
+    if (!businessId) {
+      alert("Business ID is missing. Cannot add service.");
+      return;
+    }
+
+    try {
+      const addedService = await addService(businessId, newService);
+
+      if (!addedService || !addedService.service_id) {
+        alert("Service addition failed. Try again.");
+        return;
+      }
+
+      // Refetch services from the DB to ensure UI is up to date
+      const updatedServices = await fetchServices(businessId);
+      setServices(updatedServices);
+
+      // Reset form and close the dialog
+      setNewService({
+        service_name: "",
+        description: "",
+        duration_minutes: 0,
+        price: 0,
+      });
+      setOpenAddDialog(false);
+    } catch (error) {
+      console.error("🚨 Failed to add service:", error);
+      alert("Failed to add service. Please try again.");
+    }
   };
 
   const handleCloseDialog = () => {
-    setOpenConfirmDialog(false);
+    setOpenAddDialog(false);
+
+    // Ensure focus is removed from any element inside the dialog before closing
     setTimeout(() => {
-      document.activeElement instanceof HTMLElement && document.activeElement.blur();
-    }, 0);
-  };
-
-  const handleSave = () => {
-    confirmActionHandler(async () => {
-      if (editingServiceId) {
-        await updateService(editingServiceId, editValues);
-        setServices((prev) =>
-          prev.map((service) =>
-            service.service_id === editingServiceId ? { ...service, ...editValues } : service
-          )
-        );
-        setEditingServiceId(null);
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
       }
-    });
-  };
-
-  const handleDelete = (serviceId: string) => {
-    confirmActionHandler(async () => {
-      await deleteService(serviceId);
-      setServices((prev) => prev.filter((s) => s.service_id !== serviceId));
-    });
+    }, 0);
   };
 
   if (loading) return <Typography>Loading services...</Typography>;
@@ -98,7 +134,10 @@ const ServicesTable: React.FC = () => {
       <Typography variant="h5" gutterBottom>
         Services
       </Typography>
-      <TableContainer component={Paper} sx={{ borderRadius: 2, overflow: "hidden", boxShadow: 3 }}>
+      <Button variant="contained" color="primary" onClick={() => setOpenAddDialog(true)}>
+        Add Service
+      </Button>
+      <TableContainer component={Paper} sx={{ borderRadius: 2, overflow: "hidden", boxShadow: 3, mt: 2 }}>
         <Table>
           <TableHead>
             <TableRow sx={{ backgroundColor: "#f4f4f4" }}>
@@ -160,7 +199,7 @@ const ServicesTable: React.FC = () => {
                         type="number"
                       />
                     ) : (
-                      `$${service.price.toFixed(2)}`
+                      `$${(service.price || 0).toFixed(2)}`
                     )}
                   </TableCell>
                   <TableCell align="center">
@@ -186,31 +225,24 @@ const ServicesTable: React.FC = () => {
         </Table>
       </TableContainer>
       <Dialog
-        open={openConfirmDialog}
+        open={openAddDialog}
         onClose={handleCloseDialog}
         disableEnforceFocus
-        disablePortal // ✅ Ensures dialog stays within the DOM tree of the parent
-        keepMounted   // ✅ Prevents unmounting to avoid reattaching focus incorrectly
-        aria-labelledby="confirmation-dialog-title"
-        >
-        <DialogTitle id="confirmation-dialog-title">Confirm Action</DialogTitle>
+        disableRestoreFocus
+        keepMounted
+      >
+        <DialogTitle>Add New Service</DialogTitle>
         <DialogContent>
-            <DialogContentText>Are you sure you want to proceed?</DialogContentText>
+          <TextField label="Service Name" fullWidth margin="dense" value={newService.service_name} onChange={(e) => setNewService({ ...newService, service_name: e.target.value })} />
+          <TextField label="Description" fullWidth margin="dense" value={newService.description} onChange={(e) => setNewService({ ...newService, description: e.target.value })} />
+          <TextField label="Duration (mins)" type="number" fullWidth margin="dense" value={newService.duration_minutes} onChange={(e) => setNewService({ ...newService, duration_minutes: Number(e.target.value) })} />
+          <TextField label="Price ($)" type="number" fullWidth margin="dense" value={newService.price} onChange={(e) => setNewService({ ...newService, price: Number(e.target.value) })} />
         </DialogContent>
         <DialogActions>
-            <Button onClick={handleCloseDialog}>Cancel</Button>
-            <Button
-            onClick={() => {
-                if (confirmAction) confirmAction();
-                handleCloseDialog();
-            }}
-            color="primary"
-            autoFocus
-            >
-            Confirm
-            </Button>
+          <Button onClick={handleCloseDialog}>Cancel</Button>
+          <Button onClick={handleAddService} color="primary">Add</Button>
         </DialogActions>
-        </Dialog>
+      </Dialog>
     </div>
   );
 };

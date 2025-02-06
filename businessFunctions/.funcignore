@@ -23,3 +23,5 @@ logs/
 
 # Ignore environment files
 .env
+
+.venv-busi
