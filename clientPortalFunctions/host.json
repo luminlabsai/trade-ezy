@@ -7,7 +7,12 @@
   "managedDependency": {
     "enabled": true
   },
-  "python": {
-    "pythonPath": "/Users/kit/Library/CloudStorage/OneDrive-DigitideLtd/Lumin Labs/Dev/trade-ezy/clientPortalFunctions/.venv-portal-functions/bin/python3"
+  "extensions": {
+    "http": {
+      "routePrefix": "api",
+      "maxOutstandingRequests": 200,
+      "maxConcurrentRequests": 100
+
+    }
   }
 }

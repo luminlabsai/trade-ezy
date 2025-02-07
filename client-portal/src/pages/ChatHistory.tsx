@@ -15,7 +15,6 @@ const ChatHistory: React.FC = () => {
 
   return (
     <div>
-      <h1>Chat History</h1>
       <ChatHistoryTable businessId={businessId} /> {/* ✅ Pass correct ID */}
     </div>
   );

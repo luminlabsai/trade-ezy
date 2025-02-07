@@ -24,21 +24,40 @@ const Navbar: React.FC = () => {
         justifyContent: "space-between",
         alignItems: "center",
         padding: "10px 20px",
-        backgroundColor: "#444f61",
+        backgroundColor: "#898B91",
         color: "#fff",
+        height: "60px",
       }}
     >
-      <h2>Trade-Ezy</h2>
+      {/* Left Side (Spacer for alignment) */}
+      <div style={{ width: "100px" }}></div>
+
+      {/* Centered Logo */}
+      <div style={{ flex: 1, display: "flex", justifyContent: "center" }}>
+        <img
+          src="/media/logo.png"
+          alt="Trade-Ezy Logo"
+          style={{
+            height: "40px",
+            maxWidth: "200px",
+            objectFit: "contain",
+          }}
+        />
+      </div>
+
+      {/* Right Side (Logout Button) */}
       {currentUser && (
         <button
           onClick={handleLogout}
           style={{
-            padding: "5px 10px",
-            backgroundColor: "#647a5c",
-            color: "#fff",
+            padding: "8px 15px",
+            backgroundColor: "#FDBE42", // ✅ Updated logout button color
+            color: "#333",
+            fontWeight: "bold",
             border: "none",
             borderRadius: "5px",
             cursor: "pointer",
+            transition: "background 0.3s",
           }}
         >
           Logout

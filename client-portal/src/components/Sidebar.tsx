@@ -8,7 +8,7 @@ const Sidebar: React.FC = () => {
       style={{
         width: "200px",
         height: "100vh",
-        backgroundColor: "#444f61",
+        backgroundColor: "#898B91",
         padding: "20px",
       }}
     >

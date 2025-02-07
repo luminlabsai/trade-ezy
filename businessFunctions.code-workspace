@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": "businessFunctions"
+		},
+		{
+			"path": "client-portal"
+		},
+		{
+			"path": "clientPortalFunctions"
+		},
+		{
+			"path": "frontend"
+		},
+		{
+			"path": "metaFunctions"
+		}
+	]
+}
