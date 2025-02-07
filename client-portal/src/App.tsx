@@ -82,7 +82,7 @@ function AppContent() {
             style={{
               flex: 1,
               backgroundColor: "white",
-              padding: "20px",
+              padding: "40px", // ✅ Increased padding for better spacing
               borderRight: "20px solid #898B91",
               borderBottom: "20px solid #898B91",
               display: "flex",
@@ -90,6 +90,7 @@ function AppContent() {
               alignItems: "center",
               height: "calc(100vh - 60px)",
               width: "calc(100vw - 220px)",
+              boxSizing: "border-box", // ✅ Ensures the border doesn't affect layout
             }}
           >
             <Routes>

@@ -30,7 +30,7 @@ interface ChatMessage {
 
 const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
-  const [totalCount, setTotalCount] = useState<number>(0); // ✅ Track total messages
+  const [totalCount, setTotalCount] = useState<number>(0);
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
@@ -44,9 +44,15 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
   const loadChatHistory = async () => {
     setLoading(true);
     try {
-      const response = await fetchChatHistory(businessId, fromDate, toDate, rowsPerPage, (page - 1) * rowsPerPage);
-      setChatHistory(response.messages); // ✅ Ensure `messages` array is used
-      setTotalCount(response.totalCount); // ✅ Store total count for pagination
+      const response = await fetchChatHistory(
+        businessId,
+        fromDate,
+        toDate,
+        rowsPerPage,
+        (page - 1) * rowsPerPage
+      );
+      setChatHistory(response.messages);
+      setTotalCount(response.totalCount);
     } catch (error) {
       console.error("❌ Failed to fetch chat history", error);
     }
@@ -54,12 +60,21 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
   };
 
   return (
-    <Paper sx={{ padding: 3, marginTop: 2, borderRadius: 2, boxShadow: 3 }}>
+    <Paper
+      sx={{
+        padding: 3,
+        marginTop: 2,
+        borderRadius: 2,
+        boxShadow: 3,
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
       <Typography variant="h5" sx={{ mb: 2 }}>
         Chat History
       </Typography>
 
-      {/* ✅ Date Filters */}
       <Grid container spacing={2} alignItems="center" sx={{ mb: 2 }}>
         <Grid item xs={12} sm={5}>
           <TextField
@@ -90,8 +105,7 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
         </Grid>
       </Grid>
 
-      {/* ✅ Chat Table */}
-      <TableContainer component={Paper} sx={{ borderRadius: 2, boxShadow: 2, overflow: "hidden" }}>
+      <TableContainer component={Paper} sx={{ borderRadius: 2, boxShadow: 2, flex: 1 }}>
         <Table size="small">
           <TableHead>
             <TableRow sx={{ backgroundColor: "#f4f4f4" }}>
@@ -107,9 +121,11 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
                   <TableCell>{format(new Date(message.timestamp), "yyyy-MM-dd HH:mm")}</TableCell>
                   <TableCell>{message.role}</TableCell>
                   <TableCell>
-                    {/* ✅ Truncate long messages & show tooltip on hover */}
                     <Tooltip title={message.content} arrow>
-                      <Typography noWrap sx={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <Typography
+                        noWrap
+                        sx={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      >
                         {message.content}
                       </Typography>
                     </Tooltip>
@@ -127,10 +143,9 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
         </Table>
       </TableContainer>
 
-      {/* ✅ Pagination */}
       <Grid container justifyContent="center" sx={{ mt: 2 }}>
         <Pagination
-          count={Math.ceil(totalCount / rowsPerPage)} // ✅ Use `totalCount` for pagination
+          count={Math.ceil(totalCount / rowsPerPage)}
           page={page}
           onChange={(_, value) => setPage(value)}
           color="primary"
