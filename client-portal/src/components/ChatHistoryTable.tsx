@@ -107,14 +107,26 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
       {/* Chat Table */}
       <TableContainer
         component={Paper}
-        sx={{ borderRadius: 2, boxShadow: 2, overflow: "hidden", width: "100%" }}
+        sx={{
+          borderRadius: 2,
+          boxShadow: 2,
+          width: "100%",
+          maxWidth: "100%",
+          overflowX: "auto", // Enable horizontal scrolling
+        }}
       >
-        <Table size="small">
+        <Table
+          size="small"
+          sx={{
+            tableLayout: "auto", // Adjust columns automatically
+            minWidth: 600, // Set a reasonable minimum width for the table
+          }}
+        >
           <TableHead>
             <TableRow sx={{ backgroundColor: "#f4f4f4" }}>
-              <TableCell sx={{ fontWeight: "bold" }}>Timestamp</TableCell>
-              <TableCell sx={{ fontWeight: "bold" }}>Role</TableCell>
-              <TableCell sx={{ fontWeight: "bold" }}>Message</TableCell>
+              <TableCell sx={{ fontWeight: "bold", whiteSpace: "nowrap" }}>Timestamp</TableCell>
+              <TableCell sx={{ fontWeight: "bold", whiteSpace: "nowrap" }}>Role</TableCell>
+              <TableCell sx={{ fontWeight: "bold", whiteSpace: "nowrap" }}>Message</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -128,7 +140,7 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
                       <Typography
                         noWrap
                         sx={{
-                          maxWidth: "100%",
+                          maxWidth: "250px", // Limit column width for content
                           overflow: "hidden",
                           textOverflow: "ellipsis",
                           whiteSpace: "nowrap",
