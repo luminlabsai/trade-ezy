@@ -51,19 +51,19 @@ const Bookings: React.FC = () => {
   // Function to load bookings from the API
   const loadBookings = async () => {
     if (!businessId) {
-      console.error("Business ID is missing.");
+      // console.error("Business ID is missing.");
       return;
     }
 
     setLoading(true);
     try {
-      console.log("Calling fetchBookings with params:", {
+      /* console.log("Calling fetchBookings with params:", {
         businessId,
         fromDate,
         toDate,
         rowsPerPage,
         offset: (page - 1) * rowsPerPage,
-      });
+      }); */
       const response = await fetchBookings(
         businessId,
         rowsPerPage,
@@ -72,7 +72,7 @@ const Bookings: React.FC = () => {
         toDate || undefined
       );
 
-      console.log("API Response:", response); // Debug the response
+      // console.log("API Response:", response); // Debug the response
 
       if (Array.isArray(response)) {
         setBookings(response); // If the response itself is an array
@@ -82,9 +82,9 @@ const Bookings: React.FC = () => {
         setTotalCount(response.totalCount || 0); // Handle undefined totalCount
       }
 
-      console.log("Updated bookings state:", response.bookings || response);
+      // console.log("Updated bookings state:", response.bookings || response);
     } catch (error) {
-      console.error("Failed to fetch bookings:", error);
+      // console.error("Failed to fetch bookings:", error);
       setBookings([]);
       setTotalCount(0);
     }

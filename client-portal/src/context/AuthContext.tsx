@@ -35,7 +35,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   
           // ✅ Only log in development mode, and remove the UID for security
           if (import.meta.env.MODE === "development") {
-            console.log("🔍 Debug: Firebase Authenticated User detected");
+            // console.log("🔍 Debug: Firebase Authenticated User detected");
           }
   
           const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/api/getBusinessId`, {
@@ -50,7 +50,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const data = await response.json();
   
           if (import.meta.env.MODE === "development") {
-            console.log("🔍 Debug: Business ID Retrieved");
+            // console.log("🔍 Debug: Business ID Retrieved");
           }
   
           setBusinessId(data.business_id);

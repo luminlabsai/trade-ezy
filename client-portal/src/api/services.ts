@@ -10,7 +10,7 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 export const fetchServices = async (businessId: string) => {
     if (!businessId) {
-      console.error("🚨 Error: businessId is missing or undefined.");
+      // console.error("🚨 Error: businessId is missing or undefined.");
       return [];
     }
   

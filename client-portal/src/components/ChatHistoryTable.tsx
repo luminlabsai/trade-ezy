@@ -54,7 +54,7 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
       setChatHistory(response.messages);
       setTotalCount(response.totalCount);
     } catch (error) {
-      console.error("Failed to fetch chat history", error);
+      // console.error("Failed to fetch chat history", error);
     }
     setLoading(false);
   };
