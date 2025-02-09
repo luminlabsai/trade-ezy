@@ -45,7 +45,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     # Parse query parameters
     business_id = req.params.get("business_id")
-    
+    from_date = req.params.get("from_date")
+    to_date = req.params.get("to_date")
+
     if not business_id:
         return func.HttpResponse(
             json.dumps({"error": "business_id is required."}),
@@ -61,7 +63,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Query to join bookings and users tables
+        # Base query
         query = """
         SELECT 
             b.booking_id,
@@ -75,9 +77,24 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         FROM bookings b
         INNER JOIN users u ON b.sender_id = u.sender_id
         WHERE b.business_id = %s
-        ORDER BY b.preferred_date_time DESC;
         """
-        cursor.execute(query, (business_id,))
+
+        # Query parameters
+        query_params = [business_id]
+
+        # Add date filters if provided
+        if from_date:
+            query += " AND DATE(b.preferred_date_time) >= %s"
+            query_params.append(from_date)
+        if to_date:
+            query += " AND DATE(b.preferred_date_time) <= %s"
+            query_params.append(to_date)
+
+        # Order by date
+        query += " ORDER BY b.preferred_date_time DESC;"
+
+        # Execute the query
+        cursor.execute(query, query_params)
         rows = cursor.fetchall()
 
         # Map results to a list of dictionaries
