@@ -485,140 +485,6 @@ def check_missing_user_details(sender_id):
             conn.close()
 
 
-
-
-def create_booking(sender_id, business_id, service_name=None, preferred_date_time=None):
-    """
-    Create a new booking entry in the `bookings` table.
-    """
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO bookings (sender_id, business_id, service_name, preferred_date_time)
-            VALUES (%s, %s, %s, %s)
-            RETURNING booking_id;
-            """,
-            (sender_id, business_id, service_name, preferred_date_time)
-        )
-        booking_id = cursor.fetchone()[0]
-        conn.commit()
-        logging.info(f"Booking created successfully with ID: {booking_id}")
-        return booking_id
-    except psycopg2.Error as db_error:
-        logging.error(f"Database error creating booking: {db_error}")
-        raise
-    except Exception as e:
-        logging.error(f"Unexpected error creating booking: {e}")
-        raise
-    finally:
-        try:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
-        except Exception as cleanup_error:
-            logging.error(f"Error during connection cleanup: {cleanup_error}")
-
-def update_booking(booking_id, updates):
-    """
-    Update booking details in the `bookings` table.
-    """
-    try:
-        # Log input details
-        logging.info(f"Updating booking with ID: {booking_id}, Updates: {updates}")
-
-        # Prepare database connection
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-        cursor = conn.cursor()
-
-        # Build the SQL query dynamically
-        set_clause = ", ".join([f"{key} = %s" for key in updates.keys()])
-        query = f"""
-            UPDATE bookings
-            SET {set_clause}, updated_at = NOW()
-            WHERE booking_id = %s;
-        """
-        logging.debug(f"Generated query: {query}")
-
-        # Execute the query
-        cursor.execute(query, list(updates.values()) + [booking_id])
-        conn.commit()
-
-        logging.info(f"Booking with ID: {booking_id} successfully updated.")
-
-    except psycopg2.Error as e:
-        logging.error(f"Database error while updating booking: {e}")
-    except Exception as e:
-        logging.error(f"Unexpected error while updating booking: {e}")
-    finally:
-        try:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
-        except Exception as cleanup_error:
-            logging.error(f"Error during connection cleanup: {cleanup_error}")
-
-
-
-
-def get_active_booking(sender_id, business_id):
-    """
-    Retrieve an active booking for the given sender_id and business_id.
-    """
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
-        )
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT booking_id, sender_id, business_id, service_name, 
-                   preferred_date_time, confirmed, created_at, updated_at
-            FROM bookings
-            WHERE sender_id = %s AND business_id = %s AND confirmed = FALSE
-            ORDER BY created_at DESC LIMIT 1;
-            """,
-            (sender_id, business_id)
-        )
-        booking = cursor.fetchone()
-        if booking:
-            logging.info(f"Active booking found: {booking}")
-            return {
-                "booking_id": booking[0],
-                "sender_id": booking[1],
-                "business_id": booking[2],
-                "service_name": booking[3],
-                "preferred_date_time": booking[4],
-                "confirmed": booking[5],
-                "created_at": booking[6],
-                "updated_at": booking[7],
-            }
-        else:
-            logging.info("No active booking found.")
-            return None
-    except psycopg2.Error as db_error:
-        logging.error(f"Database error retrieving active booking: {db_error}")
-        raise
-    except Exception as e:
-        logging.error(f"Unexpected error retrieving active booking: {e}")
-        raise
-    finally:
-        try:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
-        except Exception as cleanup_error:
-            logging.error(f"Error during connection cleanup: {cleanup_error}")
-
-
 # Endpoint handlers
 import decimal
 
@@ -919,7 +785,6 @@ def handle_book_slot(arguments, business_id, sender_id):
             mimetype="application/json"
         )
 
-
     # Query the database for duration and other service details using service_name
     try:
         conn = psycopg2.connect(
@@ -962,7 +827,7 @@ def handle_book_slot(arguments, business_id, sender_id):
         "clientName": arguments["clientName"],
         "phone_number": arguments["phone_number"],
         "email": arguments["email"],
-        "service_name": arguments["service_name"],  # Use service_name instead of service_id
+        "service_name": arguments["service_name"],
         "preferredDateTime": arguments["preferredDateTime"],
         "durationMinutes": arguments["durationMinutes"],
     }
@@ -979,19 +844,79 @@ def handle_book_slot(arguments, business_id, sender_id):
         response = requests.post(endpoint, json=booking_payload)
         response.raise_for_status()
         result = response.json()
+        logging.info(f"bookSlot API Response: {result}")
+
+        # Extract eventId from the bookSlot response (use eventId for consistency)
+        calendar_event_id = result.get("eventId")
+        if not calendar_event_id:
+            raise ValueError("Missing eventId in bookSlot response.")
+
+        # Create booking record in the database
+        create_booking_record(
+            sender_id=sender_id,
+            business_id=business_id,
+            service_name=arguments["service_name"],
+            preferred_date_time=arguments["preferredDateTime"],
+            duration_minutes=arguments["durationMinutes"],
+            calendar_event_id=calendar_event_id
+        )
+
+        # Construct and return a follow-up message
         follow_up_message = (
             f"Thank you, {arguments['clientName']}. Your booking for '{arguments['service_name']}' on {arguments['preferredDateTime']} "
-            f"has been successfully recorded. A confirmation email will be sent to {arguments['email']}."
-        )
+            f"has been successfully recorded. A confirmation email will be sent to {arguments['email']}.")
         store_chat_message(business_id, sender_id, "assistant", follow_up_message, "formatted")
         return func.HttpResponse(follow_up_message, status_code=200, mimetype="text/plain")
+
     except requests.RequestException as e:
         logging.error(f"Error calling bookSlot: {e}")
         return func.HttpResponse(
-            json.dumps({"error": "Failed to boosk slot. Please try again later."}),
+            json.dumps({"error": "Failed to book slot. Please try again later."}),
             status_code=500,
             mimetype="application/json"
         )
+
+
+def create_booking_record(sender_id, business_id, service_name, preferred_date_time, duration_minutes, calendar_event_id):
+    """
+    Inserts a new booking into the `bookings` table.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        )
+        cursor = conn.cursor()
+
+        # Insert booking details into the database
+        cursor.execute(
+            """
+            INSERT INTO bookings (sender_id, business_id, service_name, preferred_date_time, duration_minutes, calendar_event_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING booking_id;
+            """,
+            (sender_id, business_id, service_name, preferred_date_time, duration_minutes, calendar_event_id)
+        )
+        booking_id = cursor.fetchone()[0]
+        conn.commit()
+
+        logging.info(f"Booking record created successfully with ID: {booking_id}")
+        return booking_id
+
+    except psycopg2.Error as db_error:
+        logging.error(f"Database error creating booking: {db_error}")
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error creating booking: {e}")
+        raise
+    finally:
+        try:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+        except Exception as cleanup_error:
+            logging.error(f"Error during connection cleanup: {cleanup_error}")
+
 
 
 

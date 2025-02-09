@@ -1,7 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
 
-
 const Sidebar: React.FC = () => {
   return (
     <div
@@ -12,41 +11,59 @@ const Sidebar: React.FC = () => {
         padding: "20px",
       }}
     >
-
       <ul style={{ listStyle: "none", padding: 0 }}>
-
-      <li>
+        <li>
           <Link
             to="/users"
-            style={{ color: "#fff", textDecoration: "none", display: "block", padding: "10px 0" }}
+            style={{
+              color: "#fff",
+              textDecoration: "none",
+              display: "block",
+              padding: "10px 0",
+            }}
           >
             Account
           </Link>
         </li>
-
-
-
-
         <li>
           <Link
-            to="/chathistory"
-            style={{ color: "#fff", textDecoration: "none", display: "block", padding: "10px 0" }}
+            to="/bookings"
+            style={{
+              color: "#fff",
+              textDecoration: "none",
+              display: "block",
+              padding: "10px 0",
+            }}
           >
-            Chat History
+            Bookings
           </Link>
         </li>
-
-
-
         <li>
           <Link
             to="/services"
-            style={{ color: "#fff", textDecoration: "none", display: "block", padding: "10px 0" }}
+            style={{
+              color: "#fff",
+              textDecoration: "none",
+              display: "block",
+              padding: "10px 0",
+            }}
           >
             Services
           </Link>
         </li>
-
+        <li>
+          <Link
+            to="/chathistory"
+            style={{
+              color: "#fff",
+              textDecoration: "none",
+              display: "block",
+              padding: "10px 0",
+            }}
+          >
+            Chat History
+          </Link>
+        </li>
       </ul>
     </div>
   );

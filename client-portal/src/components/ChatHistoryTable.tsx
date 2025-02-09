@@ -54,7 +54,7 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
       setChatHistory(response.messages);
       setTotalCount(response.totalCount);
     } catch (error) {
-      console.error("❌ Failed to fetch chat history", error);
+      console.error("Failed to fetch chat history", error);
     }
     setLoading(false);
   };
@@ -62,19 +62,18 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
   return (
     <Paper
       sx={{
-        padding: 3,
+        padding: 2,
         marginTop: 2,
         borderRadius: 2,
         boxShadow: 3,
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
+        width: "100%",
       }}
     >
       <Typography variant="h5" sx={{ mb: 2 }}>
         Chat History
       </Typography>
 
+      {/* Date Filters */}
       <Grid container spacing={2} alignItems="center" sx={{ mb: 2 }}>
         <Grid item xs={12} sm={5}>
           <TextField
@@ -105,7 +104,11 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
         </Grid>
       </Grid>
 
-      <TableContainer component={Paper} sx={{ borderRadius: 2, boxShadow: 2, flex: 1 }}>
+      {/* Chat Table */}
+      <TableContainer
+        component={Paper}
+        sx={{ borderRadius: 2, boxShadow: 2, overflow: "hidden", width: "100%" }}
+      >
         <Table size="small">
           <TableHead>
             <TableRow sx={{ backgroundColor: "#f4f4f4" }}>
@@ -124,7 +127,12 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
                     <Tooltip title={message.content} arrow>
                       <Typography
                         noWrap
-                        sx={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        sx={{
+                          maxWidth: "100%",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
                       >
                         {message.content}
                       </Typography>
@@ -143,6 +151,7 @@ const ChatHistoryTable: React.FC<{ businessId: string }> = ({ businessId }) => {
         </Table>
       </TableContainer>
 
+      {/* Pagination */}
       <Grid container justifyContent="center" sx={{ mt: 2 }}>
         <Pagination
           count={Math.ceil(totalCount / rowsPerPage)}

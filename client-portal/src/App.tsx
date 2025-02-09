@@ -5,12 +5,12 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import Services from "./pages/Services";
 import ChatHistory from "./pages/ChatHistory";
 import Account from "./pages/Account";
+import Bookings from "./pages/Bookings";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
 import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
 import { auth } from "./firebase";
 
-// ✅ Define MUI theme with custom button styles
 const theme = createTheme({
   palette: {
     primary: { main: "#FDBE42", dark: "#E6A935" },
@@ -34,7 +34,6 @@ function AppContent() {
   const location = useLocation();
   const isLoginScreen = location.pathname === "/login";
 
-  // ✅ Google Sign-In Function
   const handleGoogleSignIn = async () => {
     try {
       const provider = new GoogleAuthProvider();
@@ -45,7 +44,6 @@ function AppContent() {
     }
   };
 
-  // ✅ Redirect logged-in users away from login screen
   if (currentUser && isLoginScreen) return <Navigate to="/account" replace />;
 
   return (
@@ -82,7 +80,7 @@ function AppContent() {
             style={{
               flex: 1,
               backgroundColor: "white",
-              padding: "40px", // ✅ Increased padding for better spacing
+              padding: "10px", // Reduced padding for a closer-to-edge layout
               borderRight: "20px solid #898B91",
               borderBottom: "20px solid #898B91",
               display: "flex",
@@ -90,7 +88,6 @@ function AppContent() {
               alignItems: "center",
               height: "calc(100vh - 60px)",
               width: "calc(100vw - 220px)",
-              boxSizing: "border-box", // ✅ Ensures the border doesn't affect layout
             }}
           >
             <Routes>
@@ -98,6 +95,7 @@ function AppContent() {
               <Route path="/services" element={<ProtectedRoute><Services /></ProtectedRoute>} />
               <Route path="/chathistory" element={<ProtectedRoute><ChatHistory /></ProtectedRoute>} />
               <Route path="/account" element={<ProtectedRoute><Account /></ProtectedRoute>} />
+              <Route path="/bookings" element={<ProtectedRoute><Bookings /></ProtectedRoute>} />
               <Route path="*" element={<Navigate to="/account" replace />} />
             </Routes>
           </div>

@@ -51,7 +51,7 @@ const ServicesTable: React.FC = () => {
           setLoading(false);
         })
         .catch((err) => {
-          console.error("❌ Failed to fetch services:", err);
+          console.error("\u274C Failed to fetch services:", err);
           setError("Failed to load services.");
           setLoading(false);
         });
@@ -111,7 +111,7 @@ const ServicesTable: React.FC = () => {
       setNewService({ service_name: "", description: "", duration_minutes: 0, price: 0 });
       setOpenAddDialog(false);
     } catch (error) {
-      console.error("🚨 Failed to add service:", error);
+      console.error("\uD83D\uDEA8 Failed to add service:", error);
       alert("Failed to add service. Please try again.");
     }
   };
@@ -145,8 +145,10 @@ const ServicesTable: React.FC = () => {
                   <TableCell align="center">{service.duration_minutes}</TableCell>
                   <TableCell align="center">${(service.price || 0).toFixed(2)}</TableCell>
                   <TableCell align="center">
-                    <Button onClick={() => handleEdit(service)}>Edit</Button>
-                    <Button onClick={() => handleDelete(service.service_id)} color="error">Delete</Button>
+                    <div style={{ display: "flex", justifyContent: "center", gap: "10px" }}>
+                      <Button onClick={() => handleEdit(service)}>Edit</Button>
+                      <Button onClick={() => handleDelete(service.service_id)} color="error">Delete</Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))
